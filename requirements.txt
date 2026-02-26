@@ -1,23 +1,36 @@
-# Egyptian ID Extractor – Requirements
-# Install with: pip install -r requirements.txt
+# Egyptian ID Extractor — Requirements
+# ─────────────────────────────────────
+# Install CPU-only PyTorch first (saves ~1 GB vs full CUDA build):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#
+# Then install everything else:
+#   pip install -r requirements.txt
+#
+# For GPU (CUDA 12.1):
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
 
-# ── Core (always needed) ──────────────────────────────────────────────────────
-pillow>=10.0.0            # Image loading & preprocessing
-requests>=2.31.0          # HTTP for Ollama backend
 
-# ── Backend: Qwen2-VL-2B (recommended, best Arabic OCR) ──────────────────────
-# ~3.5GB RAM on CPU, supports Arabic natively
-transformers>=4.45.0
-torch>=2.2.0              # CPU-only: pip install torch --index-url https://download.pytorch.org/whl/cpu
-qwen-vl-utils>=0.0.8      # Qwen2-VL image preprocessing
-accelerate>=0.30.0        # Model loading helpers
+# ── Core (always required) ────────────────────────────────────────────────────
+pillow>=10.0.0
+transformers>=4.49.0        # Qwen2.5-VL needs ≥4.49
+accelerate>=0.30.0
+torch>=2.2.0                # install CPU or CUDA build separately (see above)
 
-# ── Backend: moondream2 (lightest, ~2GB RAM) ──────────────────────────────────
-einops>=0.7.0             # Required by moondream
+# ── Qwen2-VL / Qwen2.5-VL backends ──────────────────────────────────────────
+# Used by: qwen2vl-2b, qwen2vl-7b, qwen25vl-3b, qwen25vl-7b, arabic-qwen
+qwen-vl-utils>=0.0.8
 
-# ── Backend: Claude API (cloud fallback) ──────────────────────────────────────
-anthropic>=0.34.0         # pip install anthropic
+# ── Donut backend ─────────────────────────────────────────────────────────────
+# naver-clova-ix/donut-base — VisionEncoderDecoderModel
+# (no extra deps; covered by transformers + pillow + torch)
 
-# ── Optional: GPU acceleration (uncomment if CUDA available) ──────────────────
-# torch>=2.2.0+cu121      # CUDA version — much faster inference
-# bitsandbytes>=0.43.0    # 4-bit quantization (CUDA only) → reduces to ~1.2GB VRAM
+# ── DeepSeek-VL2 backend ─────────────────────────────────────────────────────
+# deepseek-ai/deepseek-vl2-small
+deepseek-vl2>=0.1.0         # official DeepSeek VL2 package
+
+# ── Optional: 4-bit / 8-bit quantization (GPU only) ──────────────────────────
+# Cuts GPU VRAM to ~1.5 GB for 7B models
+# bitsandbytes>=0.43.0
+
+# ── Optional: faster image decode ────────────────────────────────────────────
+# av>=12.0.0                # needed by qwen-vl-utils for video frames (not ID cards)
