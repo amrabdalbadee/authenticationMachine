@@ -404,6 +404,56 @@ def _run_qari(image_path: str, prompt: str) -> str:
                                    skip_special_tokens=True).strip()
 
 
+# ── 4e.  LightOnOCR-2-1B ──────────────────────────────────────────────────────
+def _run_lighton_ocr(image_path: str, prompt: str) -> str:
+    """
+    LightOnOCR-2-1B — High-quality OCR model from LightOn AI.
+    HuggingFace: lightonai/LightOnOCR-2-1B
+    RAM: ~4.5 GB fp32 CPU
+    Install: pip install "transformers>=5.0.0" pypdfium2 pillow torch
+    """
+    from transformers import LightOnOcrForConditionalGeneration, LightOnOcrProcessor
+    from PIL import Image
+    import torch
+
+    MODEL_ID = "lightonai/LightOnOCR-2-1B"
+
+    if _CACHE.backend != MODEL_ID:
+        print(f"[LightOnOCR] Loading model {MODEL_ID}...")
+        _CACHE.processor = LightOnOcrProcessor.from_pretrained(MODEL_ID)
+        _CACHE.model = LightOnOcrForConditionalGeneration.from_pretrained(
+            MODEL_ID,
+            torch_dtype=torch.float32,
+            device_map="cpu",
+        )
+        _CACHE.model.eval()
+        _CACHE.backend = MODEL_ID
+
+    image = Image.open(image_path).convert("RGB")
+
+    # Follow the suggested chat template structure
+    messages = [{"role": "user", "content": [{"type": "image"}]}]
+    # Note: LightOnOCR is often used for full page transcription.
+    # We use the processor's chat template which handles the image token placement.
+    
+    inputs = _CACHE.processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+    )
+    
+    # Add the images to inputs (apply_chat_template doesn't always include them in return_dict)
+    inputs["images"] = _CACHE.processor.image_processor(image, return_tensors="pt").pixel_values.to(torch.float32)
+
+    with torch.no_grad():
+        out = _CACHE.model.generate(**inputs, max_new_tokens=1024, do_sample=False)
+
+    generated_ids = out[0, inputs["input_ids"].shape[1]:]
+    return _CACHE.processor.decode(generated_ids, skip_special_tokens=True).strip()
+
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 5.  BACKEND REGISTRY
@@ -455,6 +505,13 @@ BACKENDS: dict[str, dict] = {
         "arabic": "★★★★☆",
         "fn":     _run_qari,
         "note":   "Arabic-focused OCR from ARBML",
+    },
+    "lighton-ocr": {
+        "name":   "LightOnOCR-2-1B",
+        "ram":    "~4.5 GB",
+        "arabic": "★★★★☆",
+        "fn":     _run_lighton_ocr,
+        "note":   "High-quality document OCR; optimized for transcription",
     },
 }
 

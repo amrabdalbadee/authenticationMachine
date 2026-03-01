@@ -12,7 +12,8 @@
 
 # ── Core (always required) ────────────────────────────────────────────────────
 pillow>=10.0.0
-transformers>=4.49.0        # Qwen2.5-VL needs ≥4.49
+transformers>=5.0.0        # LightOnOCR needs ≥5.0.0
+pypdfium2                   # dependency for LightOnOCR
 accelerate>=0.30.0
 torch>=2.2.0                # install CPU or CUDA build separately (see above)
 
