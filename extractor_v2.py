@@ -214,20 +214,20 @@ class _ModelCache:
 _cache = _ModelCache()
 
 
-def _run_qwen2vl(image_path: str, prompt: str) -> str:
+def _run_qwen2vl(image_path: str, prompt: str, model_name: str = "Qwen/Qwen2-VL-2B-Instruct") -> str:
     from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
     from qwen_vl_utils import process_vision_info
     import torch
 
-    if _cache._backend != 'qwen2vl':
-        print("[Qwen2-VL] Loading model (~3.5 GB on first run)...")
+    if _cache._backend != ('qwen2vl', model_name):
+        print(f"[Qwen2-VL] Loading model {model_name}...")
         _cache._model = Qwen2VLForConditionalGeneration.from_pretrained(
-            "Qwen/Qwen2-VL-2B-Instruct",
+            model_name,
             torch_dtype=torch.float32,
             device_map="cpu",
         )
-        _cache._processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-2B-Instruct")
-        _cache._backend = 'qwen2vl'
+        _cache._processor = AutoProcessor.from_pretrained(model_name)
+        _cache._backend = ('qwen2vl', model_name)
 
     model, proc = _cache._model, _cache._processor
     messages = [{"role": "user", "content": [
@@ -395,17 +395,20 @@ class EgyptianIDExtractor:
     }
 
     def __init__(self, backend: str = "qwen2vl",
+                 qwen_model: str = "Qwen/Qwen2-VL-2B-Instruct",
                  ollama_model: str = "llava",
                  verbose: bool = False):
         if backend not in self.BACKEND_NAMES:
             raise ValueError(f"Unknown backend: {backend!r}. Options: {list(self.BACKEND_NAMES)}")
         self.backend = backend
+        self.qwen_model = qwen_model
         self.ollama_model = ollama_model
         self.verbose = verbose
 
     def _make_run_fn(self):
         if self.backend == "qwen2vl":
-            return _run_qwen2vl
+            m = self.qwen_model
+            return lambda img, prompt: _run_qwen2vl(img, prompt, m)
         if self.backend == "moondream":
             return _run_moondream
         if self.backend == "ollama":
@@ -483,6 +486,8 @@ Examples:
     parser.add_argument("--back",    help="Back side image path")
     parser.add_argument("--backend", default="qwen2vl",
                         choices=["qwen2vl", "moondream", "ollama", "claude"])
+    parser.add_argument("--qwen-model", default="Qwen/Qwen2-VL-2B-Instruct",
+                        help="Qwen2-VL model name (default: Qwen2-VL-2B-Instruct)")
     parser.add_argument("--ollama-model", default="llava")
     parser.add_argument("--output",  help="Save JSON output to file")
     parser.add_argument("--verbose", action="store_true",
@@ -494,6 +499,7 @@ Examples:
 
     extractor = EgyptianIDExtractor(
         backend=args.backend,
+        qwen_model=args.qwen_model,
         ollama_model=args.ollama_model,
         verbose=args.verbose
     )

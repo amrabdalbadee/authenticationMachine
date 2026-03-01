@@ -815,6 +815,8 @@ Examples:
 
     args = parser.parse_args()
 
+    start_time = time.perf_counter()
+
     if args.list_backends:
         list_backends()
         return
@@ -839,6 +841,7 @@ Examples:
         Path(args.output).write_text(result.to_json(), encoding="utf-8")
         print(f"\n✓ Saved to: {args.output}")
 
-
+    elapsed = time.perf_counter() - start_time
+    print(f"\n✨ Done in {elapsed:.2f} seconds.")
 if __name__ == "__main__":
     main()
