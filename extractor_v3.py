@@ -425,12 +425,19 @@ def _run_arabic_glm(image_path: str, prompt: str) -> str:
         try:
             if _CACHE.backend != MODEL_ID:
                 print(f"[Arabic-GLM] Loading {MODEL_ID}...")
+                from transformers import AutoConfig
                 _CACHE.processor = AutoTokenizer.from_pretrained(
                     MODEL_ID, trust_remote_code=True)
+                
+                config = AutoConfig.from_pretrained(MODEL_ID, trust_remote_code=True)
+                if not hasattr(config, "max_length"):
+                    config.max_length = getattr(config, "seq_length", 2048)
+                
                 _CACHE.model = AutoModelForCausalLM.from_pretrained(
                     MODEL_ID,
+                    config=config,
                     trust_remote_code=True,
-                    torch_dtype=torch.float32,
+                    dtype=torch.float32,
                     device_map="cpu",
                 )
                 _CACHE.model.eval()
