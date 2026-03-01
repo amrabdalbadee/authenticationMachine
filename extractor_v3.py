@@ -17,9 +17,6 @@ Supported backends
   arabic-qwen          AhmedSSabir/ArabicOCR-Qwen2.5-VL-7B            ~8  GB
   donut                naver-clova-ix/donut-base                       ~1.5GB
   qari                 arbml/Qari                                      ~5  GB
-  arabic-glm           THUDM/glm-4v-9b  (Arabic-GLM-OCR-v1 weights)   ~10 GB
-  baseer               Abdulmohsen/baseer                              ~5  GB
-  deepseek-ocr         deepseek-ai/deepseek-vl2-small                 ~5  GB
 """
 
 import json
@@ -407,153 +404,6 @@ def _run_qari(image_path: str, prompt: str) -> str:
                                    skip_special_tokens=True).strip()
 
 
-# ── 4e.  Arabic-GLM-OCR-v1 ───────────────────────────────────────────────────
-def _run_arabic_glm(image_path: str, prompt: str) -> str:
-    """
-    Arabic-GLM-OCR-v1 — GLM-4V fine-tuned for Arabic document understanding.
-    HuggingFace: THUDM/glm-4v-9b  (use Arabic-GLM-OCR-v1 weights when available)
-    Checkpoint alias: Arabic-Clinic/Arabic-GLM-OCR-v1
-    RAM: ~10 GB fp32 CPU | ~5 GB bf16 GPU
-    Install: pip install transformers pillow torch
-    """
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    from PIL import Image
-    import torch
-
-    # Try the Arabic fine-tune first, fall back to base GLM-4V
-    for MODEL_ID in ("Arabic-Clinic/Arabic-GLM-OCR-v1", "THUDM/glm-4v-9b"):
-        try:
-            if _CACHE.backend != MODEL_ID:
-                print(f"[Arabic-GLM] Loading {MODEL_ID}...")
-                from transformers import AutoConfig
-                _CACHE.processor = AutoTokenizer.from_pretrained(
-                    MODEL_ID, trust_remote_code=True)
-                
-                config = AutoConfig.from_pretrained(MODEL_ID, trust_remote_code=True)
-                if not hasattr(config, "max_length"):
-                    config.max_length = getattr(config, "seq_length", 2048)
-                
-                # Patch for transformers >= 4.47 compatibility with custom GLM modeling
-                config.tie_word_embeddings = False 
-                
-                _CACHE.model = AutoModelForCausalLM.from_pretrained(
-                    MODEL_ID,
-                    config=config,
-                    trust_remote_code=True,
-                    dtype=torch.float32,
-                    device_map="cpu",
-                )
-                _CACHE.model.eval()
-                _CACHE.backend = MODEL_ID
-            break
-        except Exception as e:
-            print(f"  [Arabic-GLM] Could not load {MODEL_ID}: {e}")
-            continue
-
-    if not _CACHE.processor or not _CACHE.model:
-        raise RuntimeError("Arabic-GLM backend failed to load any suitable model weights. "
-                           "Check your internet connection and ensure 'tiktoken' is installed.")
-
-    image = Image.open(image_path).convert("RGB")
-    inputs = _CACHE.processor.apply_chat_template(
-        [{"role": "user", "image": image, "content": prompt}],
-        add_generation_prompt=True,
-        tokenize=True,
-        return_tensors="pt",
-        return_dict=True,
-    )
-
-    with torch.no_grad():
-        out = _CACHE.model.generate(**inputs, max_new_tokens=700, do_sample=False)
-
-    return _CACHE.processor.decode(
-        out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()
-
-
-# ── 4f.  Baseer ───────────────────────────────────────────────────────────────
-def _run_baseer(image_path: str, prompt: str) -> str:
-    """
-    Baseer — Arabic multimodal VLM from the Abdulmohsen group.
-    HuggingFace: Abdulmohsen/baseer
-    Follows a standard VLM interface with image + text input.
-    RAM: ~5 GB fp32 CPU
-    Install: pip install transformers pillow torch
-    """
-    from transformers import AutoModelForCausalLM, AutoProcessor
-    from PIL import Image
-    import torch
-
-    MODEL_ID = "Abdulmohsen/baseer"
-
-    if _CACHE.backend != MODEL_ID:
-        print(f"[Baseer] Loading model {MODEL_ID}...")
-        _CACHE.processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
-        _CACHE.model = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID,
-            trust_remote_code=True,
-            torch_dtype=torch.float32,
-            device_map="cpu",
-        )
-        _CACHE.model.eval()
-        _CACHE.backend = MODEL_ID
-
-    image = Image.open(image_path).convert("RGB")
-    inputs = _CACHE.processor(text=prompt, images=image, return_tensors="pt")
-
-    with torch.no_grad():
-        out = _CACHE.model.generate(**inputs, max_new_tokens=700, do_sample=False)
-
-    return _CACHE.processor.decode(out[0], skip_special_tokens=True).strip()
-
-
-# ── 4g.  DeepSeek OCR ─────────────────────────────────────────────────────────
-def _run_deepseek_ocr(image_path: str, prompt: str) -> str:
-    """
-    DeepSeek-VL2-Small — DeepSeek's vision-language model, strong on document OCR.
-    HuggingFace: deepseek-ai/deepseek-vl2-small  (~4.5 GB fp32 CPU)
-    For larger accuracy: deepseek-ai/deepseek-vl2  (~20 GB — GPU recommended)
-    Install: pip install transformers pillow torch deepseek-vl2
-    """
-    from transformers import AutoModelForCausalLM, AutoProcessor
-    from PIL import Image
-    import torch
-
-    MODEL_ID = "deepseek-ai/deepseek-vl2-small"
-
-    if _CACHE.backend != MODEL_ID:
-        print(f"[DeepSeek-OCR] Loading {MODEL_ID}...")
-        _CACHE.processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
-        _CACHE.model = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID,
-            trust_remote_code=True,
-            torch_dtype=torch.float32,
-            device_map="cpu",
-        )
-        _CACHE.model.eval()
-        _CACHE.backend = MODEL_ID
-
-    image = Image.open(image_path).convert("RGB")
-
-    conversation = [{"role": "User", "content": f"<image_placeholder>{prompt}"}]
-    preamble = _CACHE.processor.apply_sft_template_for_multi_turn_prompts(
-        conversations=conversation,
-        sft_format=_CACHE.processor.sft_format,
-        system_prompt="",
-    )
-    inputs = _CACHE.processor(preamble, [image], return_tensors="pt").to("cpu")
-
-    with torch.no_grad():
-        out = _CACHE.model.generate(
-            **inputs,
-            max_new_tokens=700,
-            do_sample=False,
-            pad_token_id=_CACHE.processor.tokenizer.eos_token_id,
-        )
-
-    answer = _CACHE.processor.tokenizer.decode(
-        out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-    return answer.strip()
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 5.  BACKEND REGISTRY
@@ -605,27 +455,6 @@ BACKENDS: dict[str, dict] = {
         "arabic": "★★★★☆",
         "fn":     _run_qari,
         "note":   "Arabic-focused OCR from ARBML",
-    },
-    "arabic-glm": {
-        "name":   "Arabic-GLM-OCR-v1",
-        "ram":    "~10 GB",
-        "arabic": "★★★★☆",
-        "fn":     _run_arabic_glm,
-        "note":   "GLM-4V fine-tuned for Arabic documents",
-    },
-    "baseer": {
-        "name":   "Baseer",
-        "ram":    "~5 GB",
-        "arabic": "★★★★☆",
-        "fn":     _run_baseer,
-        "note":   "Arabic multimodal VLM",
-    },
-    "deepseek-ocr": {
-        "name":   "DeepSeek-VL2-Small",
-        "ram":    "~5 GB",
-        "arabic": "★★★★☆",
-        "fn":     _run_deepseek_ocr,
-        "note":   "Strong document OCR; good Arabic reading",
     },
 }
 
@@ -799,7 +628,6 @@ Available backends (use --list-backends for full table):
   qwen2vl-2b   ← default, 4 GB RAM, best Arabic, recommended for CPU
   qwen25vl-3b  — newer model, slightly more accurate, 4 GB RAM
   arabic-qwen  — fine-tuned on Arabic OCR, 8 GB RAM
-  deepseek-ocr — strong document reader, 5 GB RAM
   donut        — lightest at 1.5 GB, limited Arabic
   (and more — run --list-backends)
 
