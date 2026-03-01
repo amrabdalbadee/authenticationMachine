@@ -432,7 +432,10 @@ def _run_lighton_ocr(image_path: str, prompt: str) -> str:
     image = Image.open(image_path).convert("RGB")
 
     # Follow the suggested chat template structure
-    messages = [{"role": "user", "content": [{"type": "image"}]}]
+    messages = [{"role": "user", "content": [
+        {"type": "image"},
+        {"type": "text", "text": prompt}
+    ]}]
     # Note: LightOnOCR is often used for full page transcription.
     # We use the processor's chat template which handles the image token placement.
     
@@ -445,7 +448,8 @@ def _run_lighton_ocr(image_path: str, prompt: str) -> str:
     )
     
     # Add the images to inputs (apply_chat_template doesn't always include them in return_dict)
-    inputs["images"] = _CACHE.processor.image_processor(image, return_tensors="pt").pixel_values.to(torch.float32)
+    # LightOnOCR expects 'pixel_values', not 'images'
+    inputs["pixel_values"] = _CACHE.processor.image_processor(image, return_tensors="pt").pixel_values.to(torch.float32)
 
     with torch.no_grad():
         out = _CACHE.model.generate(**inputs, max_new_tokens=1024, do_sample=False)
