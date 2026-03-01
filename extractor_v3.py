@@ -439,17 +439,19 @@ def _run_lighton_ocr(image_path: str, prompt: str) -> str:
     # Note: LightOnOCR is often used for full page transcription.
     # We use the processor's chat template which handles the image token placement.
     
-    inputs = _CACHE.processor.apply_chat_template(
+    # Use the processor's chat template to get the formatted text (untokenized)
+    text_in = _CACHE.processor.apply_chat_template(
         messages,
         add_generation_prompt=True,
-        tokenize=True,
-        return_dict=True,
-        return_tensors="pt",
+        tokenize=False,
     )
     
-    # Add the images to inputs (apply_chat_template doesn't always include them in return_dict)
-    # LightOnOCR expects 'pixel_values', not 'images'
-    inputs["pixel_values"] = _CACHE.processor.image_processor(image, return_tensors="pt").pixel_values.to(torch.float32)
+    # Let the processor handle everything (input_ids, pixel_values, image_sizes)
+    inputs = _CACHE.processor(text=text_in, images=image, return_tensors="pt")
+    
+    # Ensure float32 for CPU
+    if "pixel_values" in inputs:
+        inputs["pixel_values"] = inputs["pixel_values"].to(torch.float32)
 
     with torch.no_grad():
         out = _CACHE.model.generate(**inputs, max_new_tokens=1024, do_sample=False)
