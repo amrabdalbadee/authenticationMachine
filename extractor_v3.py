@@ -370,16 +370,16 @@ def _run_qari(image_path: str, prompt: str) -> str:
     Uses a standard CausalLM + AutoTokenizer interface with image support.
     Install: pip install transformers pillow torch
     """
-    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoProcessor
+    from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
     from PIL import Image
     import torch
 
-    MODEL_ID = "arbml/Qari"
+    MODEL_ID = "NAMAA-Space/Qari-OCR-v0.3-VL-2B-Instruct"
 
     if _CACHE.backend != MODEL_ID:
         print(f"[Qari] Loading model {MODEL_ID}...")
         _CACHE.processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
-        _CACHE.model = AutoModelForCausalLM.from_pretrained(
+        _CACHE.model = Qwen2VLForConditionalGeneration.from_pretrained(
             MODEL_ID,
             trust_remote_code=True,
             torch_dtype=torch.float32,
