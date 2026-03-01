@@ -440,6 +440,10 @@ def _run_arabic_glm(image_path: str, prompt: str) -> str:
             print(f"  [Arabic-GLM] Could not load {MODEL_ID}: {e}")
             continue
 
+    if not _CACHE.processor or not _CACHE.model:
+        raise RuntimeError("Arabic-GLM backend failed to load any suitable model weights. "
+                           "Check your internet connection and ensure 'tiktoken' is installed.")
+
     image = Image.open(image_path).convert("RGB")
     inputs = _CACHE.processor.apply_chat_template(
         [{"role": "user", "image": image, "content": prompt}],
