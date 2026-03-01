@@ -433,6 +433,9 @@ def _run_arabic_glm(image_path: str, prompt: str) -> str:
                 if not hasattr(config, "max_length"):
                     config.max_length = getattr(config, "seq_length", 2048)
                 
+                # Patch for transformers >= 4.47 compatibility with custom GLM modeling
+                config.tie_word_embeddings = False 
+                
                 _CACHE.model = AutoModelForCausalLM.from_pretrained(
                     MODEL_ID,
                     config=config,
