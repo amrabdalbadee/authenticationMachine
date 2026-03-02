@@ -474,7 +474,7 @@ def _run_lighton_ocr(image_path: str, prompt: str) -> str:
     from PIL import Image
     import torch
 
-    MODEL_ID = "lightonai/LightOnOCR-2-1B"
+    MODEL_ID = "lightonai/LightOnOCR-2-1B-bbox"
 
     if _CACHE.backend != MODEL_ID:
         print(f"[LightOnOCR] Loading model {MODEL_ID}...")
@@ -773,6 +773,7 @@ Examples:
                         choices=list(BACKENDS),
                         help="Vision model backend (default: qwen2vl-2b)")
     parser.add_argument("--output",  metavar="FILE",  help="Save JSON output to file")
+    parser.add_argument("--save-raw", metavar="FILE", help="Save raw OCR text to JSON file")
     parser.add_argument("--verbose", action="store_true",
                         help="Print raw OCR and intermediate parse responses")
     parser.add_argument("--list-backends", action="store_true",
@@ -791,6 +792,15 @@ Examples:
 
     extractor = EgyptianIDExtractor(backend=args.backend, verbose=args.verbose)
     result    = extractor.extract(front_image=args.front, back_image=args.back)
+
+    # Save raw OCR if requested before potentially clearing it
+    if args.save_raw:
+        raw_data = {
+            "raw_text_front": result.raw_text_front,
+            "raw_text_back":  result.raw_text_back
+        }
+        Path(args.save_raw).write_text(json.dumps(raw_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\n✓ Raw OCR saved to: {args.save_raw}")
 
     # Hide raw text from output unless --verbose
     if not args.verbose:
