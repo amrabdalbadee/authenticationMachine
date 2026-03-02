@@ -624,6 +624,11 @@ def _process_image(image_path: str, side: str,
     # ── Pass 1: raw OCR ───────────────────────────────────────────────────────
     print("  [Pass 1] Raw OCR transcription...")
     raw = run_fn(image_path, RAW_OCR_PROMPT)
+
+    # Some models parrot the prompt back; strip it if so.
+    if raw.startswith(RAW_OCR_PROMPT):
+        raw = raw[len(RAW_OCR_PROMPT):].strip()
+
     if verbose:
         print(f"\n  {'─'*42}\n  RAW OCR:\n{raw}\n  {'─'*42}\n")
 
