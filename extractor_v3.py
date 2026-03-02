@@ -137,7 +137,9 @@ def build_parse_prompt(raw_text: str, side: str) -> str:
             "Line 1 is the Given Name, Lines 2-4 are father/grandfather names. "
             "2. Address: Look at the 2 lines of smaller Arabic text directly below the name. "
             "3. National ID: Extract the 14-digit number at the bottom center (starts with 2 or 3). "
-            "4. Serial Number: The alpha-numeric code (e.g., J07966517) is at the very bottom left."
+            "4. Serial Number: The alpha-numeric code (e.g., J07966517) is at the very bottom left. "
+            "IMPORTANT: occupation, issue_date, gender, religion, marital_status, and expiry_date "
+            "do NOT appear on the front side — always return null for these fields."
         )
     else:
         spatial_hint = (
@@ -716,9 +718,11 @@ class EgyptianIDExtractor:
             print(f"\n── BACK: {back_image}")
             raw, data = _process_image(back_image, "back", run_fn, self.verbose)
             result.raw_text_back = raw
-            # Back-side fields only fill gaps — don't overwrite good front data
+            # Back-side exclusive fields always win; front-side fields only fill gaps.
+            _BACK_ONLY = {"occupation", "issue_date", "gender", "religion",
+                          "marital_status", "expiry_date"}
             for k, v in data.items():
-                if v and not merged.get(k):
+                if v and (k in _BACK_ONLY or not merged.get(k)):
                     merged[k] = v
 
         _FIELDS = [
