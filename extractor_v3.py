@@ -17,6 +17,7 @@ Supported backends
   arabic-qwen          AhmedSSabir/ArabicOCR-Qwen2.5-VL-7B            ~8  GB
   donut                naver-clova-ix/donut-base                       ~1.5GB
   qari                 arbml/Qari                                      ~5  GB
+  
 """
 
 import json
@@ -41,6 +42,7 @@ class EgyptianIDData:
     district:               Optional[str] = None   # ثان العامرية
     governorate:            Optional[str] = None   # الاسكندرية
     national_id_number:     Optional[str] = None   # 14 digits
+    serial_number:          Optional[str] = None   # J12345678 (Front)
 
     # ── Back side ─────────────────────────────────────────────────────────────
     issue_date:             Optional[str] = None   # YYYY/MM
@@ -88,45 +90,101 @@ RAW_OCR_PROMPT = (
 )
 
 
-def build_parse_prompt(raw_text: str, side: str) -> str:
-    side_hint = (
-        "FRONT side — contains: full name (given name on first line, "
-        "father/grandfather names below), home address, 14-digit national ID number."
-        if side == "front" else
-        "BACK side — contains: issue date, occupation/job title, "
-        "gender (ذكر / أنثى), religion (مسلم / مسيحي), "
-        "marital status (أعزب / متزوج / مطلق / أرمل), "
-        "and card expiry date after the phrase (البطاقة سارية حتى)."
-    )
-    return f"""You are a data-extraction assistant for Egyptian National ID cards.
-The raw OCR text below was captured from the {side_hint}
+# def build_parse_prompt(raw_text: str, side: str) -> str:
+#     side_hint = (
+#         "FRONT side — contains: full name (given name on first line, "
+#         "father/grandfather names below), home address, 14-digit national ID number."
+#         if side == "front" else
+#         "BACK side — contains: issue date, occupation/job title, "
+#         "gender (ذكر / أنثى), religion (مسلم / مسيحي), "
+#         "marital status (أعزب / متزوج / مطلق / أرمل), "
+#         "and card expiry date after the phrase (البطاقة سارية حتى)."
+#     )
+#     return f"""You are a data-extraction assistant for Egyptian National ID cards.
+# The raw OCR text below was captured from the {side_hint}
 
+# RAW OCR TEXT:
+# \"\"\"
+# {raw_text}
+# \"\"\"
+
+# Rules:
+# 1. Copy values VERBATIM from the raw text — never invent or translate.
+# 2. national_id_number → exactly 14 digits (strip spaces, keep only digits).
+# 3. Convert Eastern-Arabic numerals (٠١٢٣٤٥٦٧٨٩) to Western (0-9) in dates.
+#    issue_date  → YYYY/MM        expiry_date → YYYY/MM/DD
+# 4. If a field is absent from the raw text output null — never write a description.
+
+# Return ONLY this JSON object with no markdown fences and no extra text:
+# {{
+#   "full_name_arabic": null,
+#   "address": null,
+#   "district": null,
+#   "governorate": null,
+#   "national_id_number": null,
+#   "issue_date": null,
+#   "occupation": null,
+#   "gender": null,
+#   "religion": null,
+#   "marital_status": null,
+#   "expiry_date": null
+# }}"""
+
+def build_parse_prompt(raw_text: str, side: str) -> str:
+    if side == "front":
+        spatial_hint = (
+            "1. Full Name: Look at the 4 lines of bold Arabic text to the right of the photo. "
+            "Line 1 is the Given Name, Lines 2-4 are father/grandfather names. "
+            "2. Address: Look at the 2 lines of smaller Arabic text directly below the name. "
+            "3. National ID: Extract the 14-digit number at the bottom center (starts with 2 or 3). "
+            "4. Serial Number: The alpha-numeric code (e.g., J07966517) is at the very bottom left."
+        )
+    else:
+        spatial_hint = (
+            "1. Occupation: The top line of text (e.g., مهندس كهرباء). "
+            "2. Issue Date: The YYYY/MM numbers at the very top left (e.g., ٢٠٢٢/١٠). "
+            "3. Gender/Religion/Marital Status: The three distinct words in the middle row. "
+            "4. Expiry Date: The full date (YYYY/MM/DD) following the phrase 'البطاقة سارية حتى' at the bottom."
+        )
+
+    return f"""
+Act as an Egyptian Document OCR Expert. You are analyzing the {side.upper()} of an Egyptian National ID.
+
+The raw OCR text below was captured from the card:
 RAW OCR TEXT:
 \"\"\"
 {raw_text}
 \"\"\"
 
-Rules:
-1. Copy values VERBATIM from the raw text — never invent or translate.
-2. national_id_number → exactly 14 digits (strip spaces, keep only digits).
-3. Convert Eastern-Arabic numerals (٠١٢٣٤٥٦٧٨٩) to Western (0-9) in dates.
-   issue_date  → YYYY/MM        expiry_date → YYYY/MM/DD
-4. If a field is absent from the raw text output null — never write a description.
+### SPATIAL GUIDES:
+{spatial_hint}
 
-Return ONLY this JSON object with no markdown fences and no extra text:
+### EXTRACTION RULES:
+1. **Verbatim Arabic:** Extract names and addresses exactly as written.
+2. **Digit Conversion:** Convert all Eastern Arabic numerals (٠١٢٣٤٥٦٧٨٩) to Western digits (0-9).
+3. **National ID:** Ensure the 14-digit number is captured as a continuous string with no spaces.
+4. **Dates:** - Issue Date (Back top-left): Format as YYYY/MM/01.
+   - Expiry Date (Back bottom): Format as YYYY/MM/DD.
+5. **Null Values:** If a field is not present on this side, return null.
+
+### OUTPUT:
+Return ONLY a valid JSON object.
+
 {{
   "full_name_arabic": null,
   "address": null,
   "district": null,
   "governorate": null,
   "national_id_number": null,
+  "serial_number": null,
   "issue_date": null,
   "occupation": null,
   "gender": null,
   "religion": null,
   "marital_status": null,
   "expiry_date": null
-}}"""
+}}
+"""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -583,6 +641,7 @@ def _process_image(image_path: str, side: str,
         "district":           _clean(parsed.get("district")),
         "governorate":        _clean(parsed.get("governorate")),
         "national_id_number": _validate_id(parsed.get("national_id_number")),
+        "serial_number":      _clean(parsed.get("serial_number")),
         "issue_date":         _validate_date(parsed.get("issue_date"),   "YYYY/MM"),
         "occupation":         _clean(parsed.get("occupation")),
         "expiry_date":        _validate_date(parsed.get("expiry_date"),  "YYYY/MM/DD"),
@@ -659,7 +718,7 @@ class EgyptianIDExtractor:
 
         _FIELDS = [
             "full_name_arabic", "address", "district", "governorate",
-            "national_id_number", "issue_date", "occupation",
+            "national_id_number", "serial_number", "issue_date", "occupation",
             "gender", "religion", "marital_status", "expiry_date",
         ]
         for f in _FIELDS:
