@@ -798,14 +798,21 @@ Examples:
     extractor = EgyptianIDExtractor(backend=args.backend, verbose=args.verbose)
     result    = extractor.extract(front_image=args.front, back_image=args.back)
 
+    # Base directory for results
+    results_dir = Path("results") / args.backend
+    if args.output or args.save_raw:
+        results_dir.mkdir(parents=True, exist_ok=True)
+
     # Save raw OCR if requested before potentially clearing it
     if args.save_raw:
         raw_data = {
             "raw_text_front": result.raw_text_front,
             "raw_text_back":  result.raw_text_back
         }
-        Path(args.save_raw).write_text(json.dumps(raw_data, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"\n✓ Raw OCR saved to: {args.save_raw}")
+        # Save into model-specific subdir
+        save_path = results_dir / Path(args.save_raw).name
+        save_path.write_text(json.dumps(raw_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\n✓ Raw OCR saved to: {save_path}")
 
     # Hide raw text from output unless --verbose
     if not args.verbose:
@@ -818,8 +825,10 @@ Examples:
     print(result.to_json())
 
     if args.output:
-        Path(args.output).write_text(result.to_json(), encoding="utf-8")
-        print(f"\n✓ Saved to: {args.output}")
+        # Save into model-specific subdir
+        save_path = results_dir / Path(args.output).name
+        save_path.write_text(result.to_json(), encoding="utf-8")
+        print(f"\n✓ Saved to: {save_path}")
 
     elapsed = time.perf_counter() - start_time
     print(f"\n✨ Done in {elapsed:.2f} seconds.")
