@@ -832,5 +832,12 @@ Examples:
 
     elapsed = time.perf_counter() - start_time
     print(f"\n✨ Done in {elapsed:.2f} seconds.")
+
+    # Save execution time
+    if args.output or args.save_raw:
+        time_path = results_dir / "time.json"
+        time_data = {"execution_time_seconds": round(elapsed, 3)}
+        time_path.write_text(json.dumps(time_data, indent=2), encoding="utf-8")
+        print(f"✓ Execution time saved to: {time_path}")
 if __name__ == "__main__":
     main()
