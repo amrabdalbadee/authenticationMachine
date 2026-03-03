@@ -94,30 +94,25 @@ class EgyptianIDData:
 class DriverLicenseData:
     """Structured data extracted from an Egyptian Driver's License."""
 
-    # ── Personal information ───────────────────────────────────────────────────
-    full_name_arabic:       Optional[str] = None   # الاسم كاملاً بالعربية (e.g. عمرو محمد عبدالبديع اسماعيل ابراهيم)
-    full_name_latin:        Optional[str] = None   # Name in Latin characters (e.g. Amr Mohammed Abdal-badeea Ismail Ibrahim)
-    national_id_number:     Optional[str] = None   # الرقم القومي — 14 digits (e.g. 29803120201713)
-    nationality:            Optional[str] = None   # الجنسية (e.g. مصري)
-    occupation:             Optional[str] = None   # المهنة (e.g. طالب)
-    address:                Optional[str] = None   # العنوان (e.g. عمارة مهندس الري والصرف بالناصرية)
-
-    # ── License details ───────────────────────────────────────────────────────
-    issuing_authority:      Optional[str] = None   # جهة الإصدار / وحدة المرور (e.g. وحدة مرور برج العرب)
-    traffic_department:     Optional[str] = None   # إدارة المرور (e.g. ادارة مرور الاسكندرية)
-    license_type:           Optional[str] = None   # نوع الرخصة (e.g. رخصه قياده خاصه)
-    license_categories:     Optional[str] = None   # فئة الرخصة — letter codes (e.g. "B")
-    issue_date:             Optional[str] = None   # تاريخ الإصدار — YYYY/MM/DD (e.g. 2018/07/15)
-    expiry_date:            Optional[str] = None   # تاريخ الانتهاء — YYYY/MM/DD (e.g. 2028/07/14)
-
-    # ── Restrictions & notes ──────────────────────────────────────────────────
-    condition:              Optional[str] = None   # الشرط / ملاحظة (e.g. يرتدي نظارة)
+    full_name_arabic:    Optional[str] = None   # الاسم كاملاً بالعربية
+    full_name_latin:     Optional[str] = None   # Latin-script name
+    national_id_number:  Optional[str] = None   # 14 digits
+    nationality:         Optional[str] = None   # الجنسية
+    occupation:          Optional[str] = None   # المهنة / الوظيفة
+    address:             Optional[str] = None   # العنوان
+    issuing_authority:   Optional[str] = None   # وحدة المرور / جهة الإصدار
+    traffic_department:  Optional[str] = None   # إدارة المرور
+    license_type:        Optional[str] = None   # نوع الرخصة
+    license_categories:  Optional[str] = None   # e.g. "B" or "A, B"
+    issue_date:          Optional[str] = None   # YYYY/MM/DD
+    expiry_date:         Optional[str] = None   # YYYY/MM/DD
+    condition:           Optional[str] = None   # any restriction note
 
     # ── Meta ──────────────────────────────────────────────────────────────────
-    confidence:    str            = "medium"
-    backend_used:  str            = "unknown"
-    raw_text_front: Optional[str] = None
-    raw_text_back:  Optional[str] = None
+    confidence:     str            = "medium"
+    backend_used:   str            = "unknown"
+    raw_text_front: Optional[str]  = None
+    raw_text_back:  Optional[str]  = None
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, indent=indent)
@@ -128,31 +123,31 @@ class PassportData:
     """Structured data extracted from an Egyptian Passport."""
 
     # ── Bio-data page ─────────────────────────────────────────────────────────
-    full_name_arabic:       Optional[str] = None   # الاسم كاملاً بالعربية
-    full_name_latin:        Optional[str] = None   # Surname + Given Names (Latin)
-    surname:                Optional[str] = None   # SURNAME (Latin, from MRZ or printed)
-    given_names:            Optional[str] = None   # GIVEN NAMES (Latin)
-    nationality:            Optional[str] = None   # EGYPTIAN / مصري
-    national_id_number:     Optional[str] = None   # 14 digits (personal number)
-    passport_number:        Optional[str] = None   # e.g. A12345678 (9 chars)
-    date_of_birth:          Optional[str] = None   # YYYY/MM/DD
-    place_of_birth:         Optional[str] = None   # محل الميلاد
-    sex:                    Optional[str] = None   # M / F  (or ذكر / أنثى)
-    issue_date:             Optional[str] = None   # YYYY/MM/DD
-    expiry_date:            Optional[str] = None   # YYYY/MM/DD
-    issuing_authority:      Optional[str] = None   # جهة الإصدار
-    profession:             Optional[str] = None   # الوظيفة / Profession (e.g. B.OF MASS COMMUNICATION)
-    address:                Optional[str] = None   # العنوان — printed address
-    civil_status:           Optional[str] = None   # الموقف التجنيدي - (e.g. غير مطلوب)
+    full_name_arabic:    Optional[str] = None   # الاسم كاملاً بالعربية
+    full_name_latin:     Optional[str] = None   # Full name in Latin
+    surname:             Optional[str] = None   # SURNAME (Latin)
+    given_names:         Optional[str] = None   # GIVEN NAMES (Latin)
+    nationality:         Optional[str] = None   # EGYPTIAN / مصري
+    national_id_number:  Optional[str] = None   # 14 digits (الرقم القومي)
+    passport_number:     Optional[str] = None   # e.g. A26171466
+    date_of_birth:       Optional[str] = None   # YYYY/MM/DD
+    place_of_birth:      Optional[str] = None   # محل الميلاد
+    sex:                 Optional[str] = None   # M / F
+    issue_date:          Optional[str] = None   # YYYY/MM/DD
+    expiry_date:         Optional[str] = None   # YYYY/MM/DD
+    issuing_authority:   Optional[str] = None   # جهة إصدار الجواز
+    profession:          Optional[str] = None   # الوظيفة والمهنة
+    address:             Optional[str] = None   # العنوان
+    civil_status:        Optional[str] = None   # الموقف التجنيدي
 
     # ── MRZ (Machine Readable Zone) ───────────────────────────────────────────
-    mrz_line1:              Optional[str] = None   # P<EGYsurname<<GIVEN<NAMES...
-    mrz_line2:              Optional[str] = None   # A12345678<3EGY...
+    mrz_line1:           Optional[str] = None   # P<EGY... (44 chars)
+    mrz_line2:           Optional[str] = None   # digits and < (44 chars)
 
     # ── Meta ──────────────────────────────────────────────────────────────────
-    confidence:    str            = "medium"
-    backend_used:  str            = "unknown"
-    raw_text_front: Optional[str] = None   # data page raw text
+    confidence:     str            = "medium"
+    backend_used:   str            = "unknown"
+    raw_text_front: Optional[str]  = None   # data page raw text
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, indent=indent)
@@ -195,10 +190,11 @@ class PassportData:
             yy = int(exp[:2])
             century = '20' if yy <= 50 else '19'
             self.expiry_date = f"{century}{exp[:2]}/{exp[2:4]}/{exp[4:6]}"
-        # Personal number (national ID)
-        personal = re.sub(r'[<\s]', '', line[28:42])
-        if personal and len(personal) == 14 and not self.national_id_number:
-            self.national_id_number = personal
+        # Personal number (national ID) — pos 29-42, strip < and non-digits
+        personal_raw = line[28:42].rstrip("<").strip()
+        personal_digits = re.sub(r"\D", "", personal_raw)
+        if len(personal_digits) == 14 and not self.national_id_number:
+            self.national_id_number = personal_digits
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -332,43 +328,54 @@ RAW_OCR_PROMPT_DL = (
 
 def build_parse_prompt_dl(raw_text: str, side: str = "front") -> str:
     spatial_hint = (
-        "1. Full Name (Arabic): Bold Arabic text (e.g. عمرو محمد عبدالبديع اسماعيل ابراهيم). "
-        "2. Full Name (Latin): Latin-script name if printed (e.g. Amr Mohammed Abdal-badeea Ismail Ibrahim). "
-        "3. National ID Number: The 14-digit number starting with 2 or 3 (e.g. 29803120201713). "
-        "4. Nationality: الجنسية (e.g. مصري). "
-        "5. Occupation: المهنة / الوظيفة (e.g. طالب). "
-        "6. Address: Arabic address text (e.g. عمارة مهندس الري والصرف بالناصرية). "
-        "7. Issuing Authority: وحدة المرور / جهة الإصدار (e.g. وحدة مرور برج العرب). "
-        "8. Traffic Department: إدارة المرور (e.g. ادارة مرور الاسكندرية). "
-        "9. License Type: نوع الرخصة (e.g. رخصه قياده خاصه). "
-        "10. License Category: فئة الرخصة — a letter code (e.g. B). "
-        "11. Issue Date: تاريخ الإصدار — YYYY/MM/DD (e.g. 2018/07/15). "
-        "12. Expiry Date: تاريخ الانتهاء — YYYY/MM/DD (e.g. 2028/07/14). "
-        "13. Condition: any restriction or note (e.g. يرتدي نظارة)."
+        "1. Full Name (Arabic)   → الاسم — bold Arabic text, usually the longest Arabic phrase "
+        "(e.g. عمرو محمد عبدالبديع اسماعيل ابراهيم). "
+        "2. Full Name (Latin)    → any Roman/Latin-script name line "
+        "(e.g. Amr Mohammed Abdal-badeea Ismail Ibrahim). "
+        "3. National ID Number   → الرقم القومي — exactly 14 consecutive digits starting with 2 or 3 "
+        "(e.g. 29803120201713). Remove all spaces. "
+        "4. Nationality          → الجنسية — the word that follows this label "
+        "(e.g. مصري or EGYPTIAN). "
+        "5. Occupation           → المهنة / الوظيفة — the word or phrase after this label "
+        "(e.g. طالب، مهندس، موظف). "
+        "6. Address              → العنوان — all Arabic address lines following this label "
+        "(e.g. عمارة مهندس الري والصرف بالناصرية مركز أبو قرقاص المنيا). "
+        "7. Issuing Authority    → جهة الإصدار / وحدة المرور — e.g. وحدة مرور برج العرب. "
+        "8. Traffic Department   → إدارة المرور — e.g. ادارة مرور الاسكندرية. "
+        "9. License Type         → نوع الرخصة — e.g. رخصه قياده خاصه. "
+        "10. License Category    → فئة الرخصة — one or more letter codes (A B C D E) "
+        "printed in a grid or listed; join multiple as comma-separated (e.g. \"B\" or \"A, B\"). "
+        "11. Issue Date          → تاريخ الإصدار — YYYY/MM/DD. "
+        "IMPORTANT: The year must be recent (2000–2030). Reject any year before 2000. "
+        "12. Expiry Date         → تاريخ الانتهاء / صالحة حتى — YYYY/MM/DD. "
+        "SANITY CHECK: expiry_date year must be >= issue_date year. "
+        "13. Condition           → any printed restriction or note, e.g. يرتدي نظارة. "
+        "Return null if absent."
     )
 
     return f"""
-Act as an Egyptian Document OCR Expert. You are analyzing an Egyptian Driver's License.
+Act as an Egyptian Document OCR Expert specialised in Arabic handwriting and printed text.
+You are analysing an Egyptian Driver's Licence (both sides combined in the raw text below).
 
-The raw OCR text below was captured from the card:
 RAW OCR TEXT:
 \"\"\"
 {raw_text}
 \"\"\"
 
-### FIELD GUIDE:
+### FIELD GUIDE (read every label carefully):
 {spatial_hint}
 
 ### EXTRACTION RULES:
-1. **Verbatim Arabic:** Extract names, addresses, and text fields exactly as written in Arabic.
-2. **Digit Conversion:** Convert all Eastern Arabic numerals (٠١٢٣٤٥٦٧٨٩) to Western digits (0-9).
-3. **National ID:** Ensure the 14-digit number is a continuous string with no spaces.
-4. **Dates:** Format all dates as YYYY/MM/DD.
-5. **License Categories:** Capture as a comma-separated string if multiple (e.g. "B" or "A, B").
-6. **Null Values:** If a field is not present in the text, return null.
+1. **Do not skip fields** — search the entire raw text for every field before returning null.
+2. **Verbatim Arabic** — copy names, occupations, addresses exactly as printed in Arabic.
+3. **Digit Conversion** — replace Eastern Arabic digits ٠١٢٣٤٥٦٧٨٩ with 0-9.
+4. **National ID** — must be exactly 14 digits, no spaces or dashes.
+5. **Dates** — output as YYYY/MM/DD only. Issue year must be 2000–2030; reject implausible values.
+6. **Issuing Authority vs Traffic Department** — extract both separately if both labels appear.
+7. **License Categories** — look for letter codes printed in boxes or a table on the back side.
+8. **Null** — only return null if the field is genuinely absent after searching the full text.
 
-### OUTPUT:
-Return ONLY a valid JSON object with no markdown fences and no extra text:
+### OUTPUT — return ONLY this JSON, no markdown, no extra text:
 
 {{
   "full_name_arabic": null,
@@ -404,44 +411,56 @@ RAW_OCR_PROMPT_PASSPORT = (
 
 def build_parse_prompt_passport(raw_text: str) -> str:
     return f"""
-Act as an Egyptian Document OCR Expert. You are analyzing the BIO-DATA PAGE of an Egyptian Passport.
+Act as an Egyptian Document OCR Expert specialised in Egyptian passports.
+You are analysing the BIO-DATA PAGE of an Egyptian Passport.
 
-The raw OCR text below was captured from the page:
 RAW OCR TEXT:
 \"\"\"
 {raw_text}
 \"\"\"
 
-### FIELD GUIDE:
-1. Passport Number: Letter + 8 digits (e.g., A26171466). Top-right corner next to "Passport No / رقم الجواز".
-2. Full Name Arabic: Bold Arabic text on the right side (e.g., محمد سليمان ابراهيم سليمان وحق).
-3. Full Name Latin: Printed below "Full Name" label (e.g., MOHAMED SOLIMAN IBRAHIM SOLIMAN).
-4. Surname: Family name part of the Latin full name.
-5. Given Names: Given name(s) part of the Latin full name.
-6. Nationality: Next to "Nationality" label — EGYPTIAN or مصري.
-7. Date of Birth: Next to "Date of Birth / تاريخ الميلاد" — YYYY/MM/DD.
-8. Place of Birth: Next to "Place of Birth / محل الميلاد" (e.g., SHARKIA / الشرقية).
-9. Sex: Next to "Sex / النوع" — ذكر → "M", أنثى → "F", or printed M/F.
-10. Issue Date: Next to "Date of Issue / تاريخ الإصدار" — YYYY/MM/DD.
-11. Expiry Date: Next to "Date of Expiry / تاريخ الانتهاء" — YYYY/MM/DD.
-12. Issuing Authority: Next to "Issuing Office / جهة إصدار الجواز" (e.g., 1).
-13. National ID Number: Next to "الرقم القومي" — 14 digits.
-14. Profession: Next to "Profession / الوظيفة والمهنة" label (e.g., B.OF MASS COMMUNICATION).
-15. Address: Next to "العنوان" label — the printed home address.
-16. Civil Status: Next to "الموقف التجنيدي" label (e.g., غير مطلوب).
-17. MRZ Line 1: First machine-readable line starting with "P<EGY" (44 characters).
-18. MRZ Line 2: Second machine-readable line (44 characters, digits and <).
+### FIELD GUIDE (search carefully for every label):
+1.  Passport Number    → رقم الجواز / Passport No — letter + 8 digits in top-right area
+                         (e.g. A26171466).
+2.  Full Name Arabic   → الاسم / الاسم كاملاً — bold Arabic text on the right half
+                         (e.g. محمد سليمان ابراهيم سليمان وحق).
+3.  Full Name Latin    → Full Name / الاسم — Latin-script line below the label
+                         (e.g. MOHAMED SOLIMAN IBRAHIM SOLIMAN WAHSH).
+4.  Surname            → Family-name portion of the Latin full name (first word(s) before <<
+                         in MRZ line 1, or the SURNAME field if labelled).
+5.  Given Names        → Given-name portion of the Latin full name.
+6.  Nationality        → Nationality / الجنسية — e.g. EGYPTIAN or مصري.
+7.  Date of Birth      → Date of Birth / تاريخ الميلاد — YYYY/MM/DD.
+8.  Place of Birth     → Place of Birth / محل الميلاد — e.g. SHARKIA / الشرقية.
+9.  Sex                → Sex / النوع — ذكر → "M", أنثى → "F", or M/F as printed.
+10. Issue Date         → Date of Issue / تاريخ الإصدار — YYYY/MM/DD.
+11. Expiry Date        → Date of Expiry / تاريخ الانتهاء — YYYY/MM/DD.
+12. Issuing Authority  → Issuing Office / جهة إصدار الجواز — e.g. 1.
+13. National ID Number → الرقم القومي — exactly 14 digits; also decodable from MRZ line 2
+                         positions 29–42 (strip trailing < characters, must be 14 digits).
+14. Profession         → Profession / الوظيفة والمهنة — text that follows this label
+                         (e.g. B.OF MASS COMMUNICATION or طالب).
+                         IMPORTANT: This field is often printed in small text below the name block.
+15. Address            → العنوان — Arabic or bilingual address following this label.
+                         IMPORTANT: Look for this label carefully; it may appear in small print.
+16. Civil Status       → الموقف التجنيدي — text following this label
+                         (e.g. غير مطلوب or أدى الخدمة).
+                         IMPORTANT: This label may appear near the bottom of the page.
+17. MRZ Line 1         → First machine-readable line, starts with P<EGY, exactly 44 chars.
+18. MRZ Line 2         → Second machine-readable line, exactly 44 chars (digits and <).
 
 ### EXTRACTION RULES:
-1. **Verbatim:** Copy all field values exactly as written.
-2. **Digit Conversion:** Convert Eastern Arabic numerals (٠١٢٣٤٥٦٧٨٩) to Western digits (0-9).
-3. **MRZ Lines:** Preserve all '<' characters exactly as seen.
-4. **Dates:** Format as YYYY/MM/DD.
-5. **Sex:** Normalise to "M" or "F".
-6. **Null Values:** Return null for any field not present on the page.
+1. **Do not skip fields** — scan the entire raw text for every label before returning null.
+2. **National ID from MRZ** — if الرقم القومي label is absent, extract from MRZ line 2:
+   characters at positions 29–42 (1-indexed), strip trailing '<', verify it is 14 digits.
+3. **Verbatim** — copy field values exactly as written; do not paraphrase.
+4. **Digit Conversion** — replace ٠١٢٣٤٥٦٧٨٩ with 0-9 everywhere.
+5. **MRZ Lines** — preserve every '<' character exactly; do not add or remove any.
+6. **Dates** — format as YYYY/MM/DD.
+7. **Sex** — normalise to "M" or "F" only.
+8. **Null** — only return null if the field is genuinely absent after a thorough search.
 
-### OUTPUT:
-Return ONLY a valid JSON object with no markdown fences and no extra text:
+### OUTPUT — return ONLY this JSON, no markdown, no extra text:
 
 {{
   "full_name_arabic": null,
@@ -568,22 +587,28 @@ def _regex_extract_dl(raw: str) -> dict:
             result['national_id_number'] = digits
             break
 
-    # Dates YYYY/MM/DD — first is issue, last is expiry
+    # License number: shorter alphanumeric code (6–12 chars) near رخصة / license keywords
+    ln = re.search(r'(?:رخصة|رقم)\s*[:\-]?\s*([A-Z0-9]{4,12})', text, re.IGNORECASE)
+    if ln:
+        result.setdefault('license_number', ln.group(1))
+    # Fallback: any standalone 6-10 digit number that is NOT the national ID
+    for m in re.finditer(r'\b(\d{6,10})\b', text):
+        val = m.group(1)
+        if val != result.get('national_id_number'):
+            result.setdefault('license_number', val)
+            break
+
+    # Dates  YYYY/MM/DD
     dates_found = re.findall(r'\b(\d{4}/\d{2}/\d{2})\b', text)
     if len(dates_found) >= 1:
         result.setdefault('issue_date',  dates_found[0])
     if len(dates_found) >= 2:
         result.setdefault('expiry_date', dates_found[-1])
 
-    # License category: single letter codes A-E
+    # License categories: individual letter codes
     cats = re.findall(r'\b([A-E])\b', text)
     if cats:
         result.setdefault('license_categories', ', '.join(sorted(set(cats))))
-
-    # Condition: يرتدي نظارة or similar restriction text
-    cond = re.search(r'(يرتدي\s+\S+)', raw)
-    if cond:
-        result.setdefault('condition', cond.group(1))
 
     return result
 
@@ -1016,15 +1041,16 @@ def _process_image(image_path: str, side: str,
             "full_name_arabic":   _clean(parsed.get("full_name_arabic")),
             "full_name_latin":    _clean(parsed.get("full_name_latin")),
             "national_id_number": _validate_id(parsed.get("national_id_number")),
-            "date_of_birth":      _validate_date(parsed.get("date_of_birth"),   "YYYY/MM/DD"),
+            "nationality":        _clean(parsed.get("nationality")),
+            "occupation":         _clean(parsed.get("occupation")),
             "address":            _clean(parsed.get("address")),
-            "governorate":        _clean(parsed.get("governorate")),
-            "license_number":     _clean(parsed.get("license_number")),
-            "issue_date":         _validate_date(parsed.get("issue_date"),       "YYYY/MM/DD"),
-            "expiry_date":        _validate_date(parsed.get("expiry_date"),      "YYYY/MM/DD"),
-            "license_categories": _clean(parsed.get("license_categories")),
             "issuing_authority":  _clean(parsed.get("issuing_authority")),
-            "traffic_unit":       _clean(parsed.get("traffic_unit")),
+            "traffic_department": _clean(parsed.get("traffic_department")),
+            "license_type":       _clean(parsed.get("license_type")),
+            "license_categories": _clean(parsed.get("license_categories")),
+            "issue_date":         _validate_date(parsed.get("issue_date"),   "YYYY/MM/DD"),
+            "expiry_date":        _validate_date(parsed.get("expiry_date"),  "YYYY/MM/DD"),
+            "condition":          _clean(parsed.get("condition")),
         }
         regex_fn = _regex_extract_dl
 
@@ -1201,17 +1227,17 @@ class DriverLicenseExtractor:
             raw, data = _process_image(back_image, "back", run_fn, self.verbose,
                                        doc_type="driver_license")
             result.raw_text_back = raw
-            _BACK_ONLY = {"issuing_authority", "traffic_department", "license_type",
-                          "license_categories", "issue_date", "expiry_date", "condition"}
+            _BACK_ONLY = {"issue_date", "expiry_date",
+                          "license_categories", "issuing_authority", "traffic_unit"}
             for k, v in data.items():
                 if v and (k in _BACK_ONLY or not merged.get(k)):
                     merged[k] = v
 
         _FIELDS = [
             "full_name_arabic", "full_name_latin", "national_id_number",
-            "nationality", "occupation", "address",
-            "issuing_authority", "traffic_department", "license_type",
-            "license_categories", "issue_date", "expiry_date", "condition",
+            "date_of_birth", "address", "governorate", "license_number",
+            "issue_date", "expiry_date", "license_categories",
+            "issuing_authority", "traffic_unit",
         ]
         for f in _FIELDS:
             if merged.get(f):
@@ -1219,7 +1245,7 @@ class DriverLicenseExtractor:
 
         # Confidence
         key_fields = ["full_name_arabic", "national_id_number",
-                      "issuing_authority", "expiry_date"]
+                      "license_number", "expiry_date"]
         filled = sum(1 for f in key_fields if getattr(result, f))
         result.confidence = "high" if filled >= 3 else "medium" if filled >= 2 else "low"
 
