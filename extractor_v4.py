@@ -1,0 +1,1424 @@
+"""
+Egyptian Document Data Extractor  v4
+======================================
+Supports three document types:
+  • national_id     — Egyptian National ID Card (بطاقة الرقم القومي)
+  • driver_license  — Egyptian Driver's License (رخصة القيادة)
+  • passport        — Egyptian Passport (جواز السفر)
+
+Three-pass pipeline (all document types):
+  Pass 1 — Raw OCR  : "Transcribe everything you see" (no JSON, no structure)
+  Pass 2 — Parse    : Map raw text → structured fields (model sees its own OCR output)
+  Pass 3 — Regex    : Rule-based recovery for IDs, dates, MRZ, and categorical fields
+
+Supported backends
+──────────────────
+  ID                   Model / HuggingFace repo                       RAM (CPU)
+  ─────────────────    ─────────────────────────────────────────────  ─────────
+  qwen2vl-2b           Qwen/Qwen2-VL-2B-Instruct                      ~3.5 GB  ← default
+  qwen2vl-7b           Qwen/Qwen2-VL-7B-Instruct                      ~8  GB
+  qwen25vl-3b          Qwen/Qwen2.5-VL-3B-Instruct                    ~4  GB
+  qwen25vl-7b          Qwen/Qwen2.5-VL-7B-Instruct                    ~8  GB
+  arabic-qwen          AhmedSSabir/ArabicOCR-Qwen2.5-VL-7B            ~8  GB
+  donut                naver-clova-ix/donut-base                       ~1.5GB
+  qari                 arbml/Qari                                      ~5  GB
+
+Document type usage
+───────────────────
+  # National ID (default):
+  python extractor.py --doc-type national_id --front front.jpg --back back.jpg
+
+  # Driver's License:
+  python extractor.py --doc-type driver_license --front front.jpg --back back.jpg
+
+  # Passport (single image — data page):
+  python extractor.py --doc-type passport --front passport_data_page.jpg
+"""
+
+import json
+import os
+import re
+import argparse
+import time
+from pathlib import Path
+from dataclasses import dataclass, asdict
+from typing import Optional, Callable
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1.  DATA SCHEMA
+# ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class EgyptianIDData:
+    # ── Front side ────────────────────────────────────────────────────────────
+    full_name_arabic:       Optional[str] = None   # عمرو محمد عبدالبديع ...
+    address:                Optional[str] = None   # عمارة مهندس الرى ...
+    district:               Optional[str] = None   # ثان العامرية
+    governorate:            Optional[str] = None   # الاسكندرية
+    national_id_number:     Optional[str] = None   # 14 digits
+    serial_number:          Optional[str] = None   # J12345678 (Front)
+
+    # ── Back side ─────────────────────────────────────────────────────────────
+    issue_date:             Optional[str] = None   # YYYY/MM
+    occupation:             Optional[str] = None   # مهندس كهرباء
+    gender:                 Optional[str] = None   # ذكر / أنثى
+    religion:               Optional[str] = None   # مسلم / مسيحي
+    marital_status:         Optional[str] = None   # أعزب / متزوج / ...
+    expiry_date:            Optional[str] = None   # YYYY/MM/DD
+
+    # ── Derived ───────────────────────────────────────────────────────────────
+    date_of_birth:          Optional[str] = None   # YYYY-MM-DD (from NID)
+    birth_governorate_code: Optional[str] = None   # 2-digit code
+
+    # ── Meta ──────────────────────────────────────────────────────────────────
+    confidence:   str           = "medium"
+    backend_used: str           = "unknown"
+    raw_text_front: Optional[str] = None
+    raw_text_back:  Optional[str] = None
+
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(asdict(self), ensure_ascii=False, indent=indent)
+
+    def parse_national_id(self) -> None:
+        """Derive date-of-birth and governorate code from the 14-digit NID."""
+        nid = re.sub(r'\D', '', self.national_id_number or '')
+        if len(nid) == 14:
+            century = '19' if nid[0] == '2' else '20'
+            self.date_of_birth          = f"{century}{nid[1:3]}-{nid[3:5]}-{nid[5:7]}"
+            self.birth_governorate_code = nid[7:9]
+            self.national_id_number     = nid
+
+
+@dataclass
+class DriverLicenseData:
+    """Structured data extracted from an Egyptian Driver's License."""
+
+    # ── Front side ────────────────────────────────────────────────────────────
+    full_name_arabic:       Optional[str] = None   # الاسم كاملاً بالعربية
+    full_name_latin:        Optional[str] = None   # Name in Latin characters (if printed)
+    national_id_number:     Optional[str] = None   # 14 digits
+    date_of_birth:          Optional[str] = None   # YYYY/MM/DD
+    address:                Optional[str] = None   # العنوان
+    governorate:            Optional[str] = None   # المحافظة
+    license_number:         Optional[str] = None   # رقم الرخصة
+
+    # ── Back side ─────────────────────────────────────────────────────────────
+    issue_date:             Optional[str] = None   # YYYY/MM/DD
+    expiry_date:            Optional[str] = None   # YYYY/MM/DD
+    license_categories:     Optional[str] = None   # e.g. "A, B, C" — فئات الرخصة
+    issuing_authority:      Optional[str] = None   # جهة الإصدار (e.g. مرور الجيزة)
+    traffic_unit:           Optional[str] = None   # وحدة المرور
+
+    # ── Meta ──────────────────────────────────────────────────────────────────
+    confidence:    str            = "medium"
+    backend_used:  str            = "unknown"
+    raw_text_front: Optional[str] = None
+    raw_text_back:  Optional[str] = None
+
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(asdict(self), ensure_ascii=False, indent=indent)
+
+
+@dataclass
+class PassportData:
+    """Structured data extracted from an Egyptian Passport."""
+
+    # ── Bio-data page ─────────────────────────────────────────────────────────
+    full_name_arabic:       Optional[str] = None   # الاسم كاملاً بالعربية
+    full_name_latin:        Optional[str] = None   # Surname + Given Names (Latin)
+    surname:                Optional[str] = None   # SURNAME (Latin, from MRZ or printed)
+    given_names:            Optional[str] = None   # GIVEN NAMES (Latin)
+    nationality:            Optional[str] = None   # EGYPTIAN / مصري
+    national_id_number:     Optional[str] = None   # 14 digits (personal number)
+    passport_number:        Optional[str] = None   # e.g. A12345678 (9 chars)
+    date_of_birth:          Optional[str] = None   # YYYY/MM/DD
+    place_of_birth:         Optional[str] = None   # محل الميلاد
+    sex:                    Optional[str] = None   # M / F  (or ذكر / أنثى)
+    issue_date:             Optional[str] = None   # YYYY/MM/DD
+    expiry_date:            Optional[str] = None   # YYYY/MM/DD
+    issuing_authority:      Optional[str] = None   # جهة الإصدار
+    profession:             Optional[str] = None   # الوظيفة / Profession (e.g. B.OF MASS COMMUNICATION)
+    address:                Optional[str] = None   # العنوان — printed address
+    civil_status:           Optional[str] = None   # الموقف التجنيدي - (e.g. غير مطلوب)
+
+    # ── MRZ (Machine Readable Zone) ───────────────────────────────────────────
+    mrz_line1:              Optional[str] = None   # P<EGYsurname<<GIVEN<NAMES...
+    mrz_line2:              Optional[str] = None   # A12345678<3EGY...
+
+    # ── Meta ──────────────────────────────────────────────────────────────────
+    confidence:    str            = "medium"
+    backend_used:  str            = "unknown"
+    raw_text_front: Optional[str] = None   # data page raw text
+
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(asdict(self), ensure_ascii=False, indent=indent)
+
+    def parse_mrz(self) -> None:
+        """
+        Extract structured fields from MRZ line 2 if present.
+        MRZ line 2 format (TD3):  PPPPPPPPP<CNNN YYMMDD C YYMMDD C PPPPPPPPPPPPPP C
+        Positions (1-indexed):
+          1–9   passport number
+          10    check digit
+          11–13 nationality
+          14–19 DOB YYMMDD
+          20    check digit
+          21    sex (M/F/<)
+          22–27 expiry YYMMDD
+          28    check digit
+          29–42 personal number
+        """
+        line = re.sub(r'\s+', '', self.mrz_line2 or '')
+        if len(line) < 44:
+            return
+        # Passport number (strip trailing <)
+        pn = line[0:9].rstrip('<')
+        if pn and not self.passport_number:
+            self.passport_number = pn
+        # DOB
+        dob = line[13:19]
+        if re.match(r'^\d{6}$', dob) and not self.date_of_birth:
+            yy = int(dob[:2])
+            century = '19' if yy >= 24 else '20'
+            self.date_of_birth = f"{century}{dob[:2]}/{dob[2:4]}/{dob[4:6]}"
+        # Sex
+        sex_char = line[20]
+        if sex_char in ('M', 'F') and not self.sex:
+            self.sex = sex_char
+        # Expiry
+        exp = line[21:27]
+        if re.match(r'^\d{6}$', exp) and not self.expiry_date:
+            yy = int(exp[:2])
+            century = '20' if yy <= 50 else '19'
+            self.expiry_date = f"{century}{exp[:2]}/{exp[2:4]}/{exp[4:6]}"
+        # Personal number (national ID)
+        personal = re.sub(r'[<\s]', '', line[28:42])
+        if personal and len(personal) == 14 and not self.national_id_number:
+            self.national_id_number = personal
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 2.  PROMPTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── 2a. National ID prompts ────────────────────────────────────────────────────
+
+RAW_OCR_PROMPT = (
+    "هذه بطاقة تحقيق شخصية مصرية. "
+    "انسخ كل كلمة عربية وكل رقم تراه تماماً كما هو مطبوع، بدون ترجمة أو شرح. "
+    "اكتب النص الخام فقط.\n\n"
+    "--- ENGLISH ---\n"
+    "This is an Egyptian National ID card. "
+    "Transcribe every Arabic word and every number exactly as printed. "
+    "No translation, no explanation — output RAW TEXT ONLY."
+)
+
+
+# def build_parse_prompt(raw_text: str, side: str) -> str:
+#     side_hint = (
+#         "FRONT side — contains: full name (given name on first line, "
+#         "father/grandfather names below), home address, 14-digit national ID number."
+#         if side == "front" else
+#         "BACK side — contains: issue date, occupation/job title, "
+#         "gender (ذكر / أنثى), religion (مسلم / مسيحي), "
+#         "marital status (أعزب / متزوج / مطلق / أرمل), "
+#         "and card expiry date after the phrase (البطاقة سارية حتى)."
+#     )
+#     return f"""You are a data-extraction assistant for Egyptian National ID cards.
+# The raw OCR text below was captured from the {side_hint}
+
+# RAW OCR TEXT:
+# \"\"\"
+# {raw_text}
+# \"\"\"
+
+# Rules:
+# 1. Copy values VERBATIM from the raw text — never invent or translate.
+# 2. national_id_number → exactly 14 digits (strip spaces, keep only digits).
+# 3. Convert Eastern-Arabic numerals (٠١٢٣٤٥٦٧٨٩) to Western (0-9) in dates.
+#    issue_date  → YYYY/MM        expiry_date → YYYY/MM/DD
+# 4. If a field is absent from the raw text output null — never write a description.
+
+# Return ONLY this JSON object with no markdown fences and no extra text:
+# {{
+#   "full_name_arabic": null,
+#   "address": null,
+#   "district": null,
+#   "governorate": null,
+#   "national_id_number": null,
+#   "issue_date": null,
+#   "occupation": null,
+#   "gender": null,
+#   "religion": null,
+#   "marital_status": null,
+#   "expiry_date": null
+# }}"""
+
+def build_parse_prompt(raw_text: str, side: str) -> str:
+    if side == "front":
+        spatial_hint = (
+            "1. Full Name: Look at the 4 lines of bold Arabic text to the right of the photo. "
+            "Line 1 is the Given Name, Lines 2-4 are father/grandfather names. "
+            "2. Address: Look at the 2 lines of smaller Arabic text directly below the name. "
+            "3. National ID: Extract the 14-digit number at the bottom center (starts with 2 or 3). "
+            "4. Serial Number: The alpha-numeric code (e.g., J07966517) is at the very bottom left. "
+            "IMPORTANT: occupation, issue_date, gender, religion, marital_status, and expiry_date "
+            "do NOT appear on the front side — always return null for these fields."
+        )
+    else:
+        spatial_hint = (
+            "1. Occupation: The top line of text (e.g., مهندس كهرباء). "
+            "2. Issue Date: The YYYY/MM numbers at the very top left (e.g., ٢٠٢٢/١٠). "
+            "3. Gender/Religion/Marital Status: The three distinct words in the middle row. "
+            "4. Expiry Date: The full date (YYYY/MM/DD) following the phrase 'البطاقة سارية حتى' at the bottom."
+        )
+
+    return f"""
+Act as an Egyptian Document OCR Expert. You are analyzing the {side.upper()} of an Egyptian National ID.
+
+The raw OCR text below was captured from the card:
+RAW OCR TEXT:
+\"\"\"
+{raw_text}
+\"\"\"
+
+### SPATIAL GUIDES:
+{spatial_hint}
+
+### EXTRACTION RULES:
+1. **Verbatim Arabic:** Extract names and addresses exactly as written.
+2. **Digit Conversion:** Convert all Eastern Arabic numerals (٠١٢٣٤٥٦٧٨٩) to Western digits (0-9).
+3. **National ID:** Ensure the 14-digit number is captured as a continuous string with no spaces.
+4. **Dates:** - Issue Date (Back top-left): Format as YYYY/MM/01.
+   - Expiry Date (Back bottom): Format as YYYY/MM/DD.
+5. **Null Values:** If a field is not present on this side, return null.
+
+### OUTPUT:
+Return ONLY a valid JSON object.
+
+{{
+  "full_name_arabic": null,
+  "address": null,
+  "district": null,
+  "governorate": null,
+  "national_id_number": null,
+  "serial_number": null,
+  "issue_date": null,
+  "occupation": null,
+  "gender": null,
+  "religion": null,
+  "marital_status": null,
+  "expiry_date": null
+}}
+"""
+
+
+# ── 2b. Driver's License prompts ──────────────────────────────────────────────
+
+RAW_OCR_PROMPT_DL = (
+    "هذه رخصة قيادة مصرية. "
+    "انسخ كل كلمة عربية وكل رقم وكل حرف لاتيني تراه تماماً كما هو مطبوع، بدون ترجمة أو شرح. "
+    "اكتب النص الخام فقط.\n\n"
+    "--- ENGLISH ---\n"
+    "This is an Egyptian Driver's License. "
+    "Transcribe every Arabic word, every number, and every Latin character exactly as printed. "
+    "No translation, no explanation — output RAW TEXT ONLY."
+)
+
+
+def build_parse_prompt_dl(raw_text: str, side: str) -> str:
+    if side == "front":
+        spatial_hint = (
+            "1. Full Name (Arabic): The bold Arabic text near the top (e.g. محمد أحمد علي). "
+            "2. Full Name (Latin): Latin-script name if printed (may be absent). "
+            "3. National ID Number: The 14-digit number (starts with 2 or 3). "
+            "4. Date of Birth: YYYY/MM/DD format near the national ID. "
+            "5. Address: Arabic address lines below the name. "
+            "6. Governorate: The محافظة / governorate name. "
+            "7. License Number: The رقم الرخصة — typically a shorter numeric or alphanumeric code."
+        )
+    else:
+        spatial_hint = (
+            "1. Issue Date: تاريخ الإصدار — YYYY/MM/DD. "
+            "2. Expiry Date: تاريخ الانتهاء / صالحة حتى — YYYY/MM/DD. "
+            "3. License Categories: The letter codes for permitted vehicle classes "
+            "(e.g. A, B, C, D, E or Arabic equivalents like خ, ع, ج). "
+            "4. Issuing Authority: جهة الإصدار (e.g. مرور القاهرة). "
+            "5. Traffic Unit: الوحدة / وحدة المرور."
+        )
+
+    return f"""
+Act as an Egyptian Document OCR Expert. You are analyzing the {side.upper()} of an Egyptian Driver's License.
+
+The raw OCR text below was captured from the card:
+RAW OCR TEXT:
+\"\"\"
+{raw_text}
+\"\"\"
+
+### SPATIAL GUIDES:
+{spatial_hint}
+
+### EXTRACTION RULES:
+1. **Verbatim Arabic:** Extract names and addresses exactly as written in Arabic.
+2. **Digit Conversion:** Convert all Eastern Arabic numerals (٠١٢٣٤٥٦٧٨٩) to Western digits (0-9).
+3. **National ID:** Ensure the 14-digit number is a continuous string with no spaces.
+4. **Dates:** Format all dates as YYYY/MM/DD. Use 01 if day is missing (e.g., YYYY/MM → YYYY/MM/01).
+5. **License Categories:** Capture as a comma-separated string (e.g., "A, B, C").
+6. **Null Values:** If a field is not present on this side, return null.
+
+### OUTPUT:
+Return ONLY a valid JSON object with no markdown fences and no extra text:
+
+{{
+  "full_name_arabic": null,
+  "full_name_latin": null,
+  "national_id_number": null,
+  "date_of_birth": null,
+  "address": null,
+  "governorate": null,
+  "license_number": null,
+  "issue_date": null,
+  "expiry_date": null,
+  "license_categories": null,
+  "issuing_authority": null,
+  "traffic_unit": null
+}}
+"""
+
+
+# ── 2c. Passport prompts ──────────────────────────────────────────────────────
+
+RAW_OCR_PROMPT_PASSPORT = (
+    "هذا جواز سفر مصري. "
+    "انسخ كل كلمة عربية وكل حرف لاتيني وكل رقم تراه تماماً كما هو مطبوع، بما في ذلك سطور MRZ. "
+    "اكتب النص الخام فقط بدون ترجمة أو شرح.\n\n"
+    "--- ENGLISH ---\n"
+    "This is an Egyptian Passport. "
+    "Transcribe every Arabic word, every Latin character, and every number exactly as printed, "
+    "including the two MRZ lines at the bottom. "
+    "No translation, no explanation — output RAW TEXT ONLY."
+)
+
+
+def build_parse_prompt_passport(raw_text: str) -> str:
+    return f"""
+Act as an Egyptian Document OCR Expert. You are analyzing the BIO-DATA PAGE of an Egyptian Passport.
+
+The raw OCR text below was captured from the page:
+RAW OCR TEXT:
+\"\"\"
+{raw_text}
+\"\"\"
+
+### FIELD GUIDE:
+1. Passport Number: Letter + 8 digits (e.g., A26171466). Top-right corner next to "Passport No / رقم الجواز".
+2. Full Name Arabic: Bold Arabic text on the right side (e.g., محمد سليمان ابراهيم سليمان وحق).
+3. Full Name Latin: Printed below "Full Name" label (e.g., MOHAMED SOLIMAN IBRAHIM SOLIMAN).
+4. Surname: Family name part of the Latin full name.
+5. Given Names: Given name(s) part of the Latin full name.
+6. Nationality: Next to "Nationality" label — EGYPTIAN or مصري.
+7. Date of Birth: Next to "Date of Birth / تاريخ الميلاد" — YYYY/MM/DD.
+8. Place of Birth: Next to "Place of Birth / محل الميلاد" (e.g., SHARKIA / الشرقية).
+9. Sex: Next to "Sex / النوع" — ذكر → "M", أنثى → "F", or printed M/F.
+10. Issue Date: Next to "Date of Issue / تاريخ الإصدار" — YYYY/MM/DD.
+11. Expiry Date: Next to "Date of Expiry / تاريخ الانتهاء" — YYYY/MM/DD.
+12. Issuing Authority: Next to "Issuing Office / جهة إصدار الجواز" (e.g., 1).
+13. National ID Number: Next to "الرقم القومي" — 14 digits.
+14. Profession: Next to "Profession / الوظيفة والمهنة" label (e.g., B.OF MASS COMMUNICATION).
+15. Address: Next to "العنوان" label — the printed home address.
+16. Civil Status: Next to "الموقف التجنيدي" label (e.g., غير مطلوب).
+17. MRZ Line 1: First machine-readable line starting with "P<EGY" (44 characters).
+18. MRZ Line 2: Second machine-readable line (44 characters, digits and <).
+
+### EXTRACTION RULES:
+1. **Verbatim:** Copy all field values exactly as written.
+2. **Digit Conversion:** Convert Eastern Arabic numerals (٠١٢٣٤٥٦٧٨٩) to Western digits (0-9).
+3. **MRZ Lines:** Preserve all '<' characters exactly as seen.
+4. **Dates:** Format as YYYY/MM/DD.
+5. **Sex:** Normalise to "M" or "F".
+6. **Null Values:** Return null for any field not present on the page.
+
+### OUTPUT:
+Return ONLY a valid JSON object with no markdown fences and no extra text:
+
+{{
+  "full_name_arabic": null,
+  "full_name_latin": null,
+  "surname": null,
+  "given_names": null,
+  "nationality": null,
+  "national_id_number": null,
+  "passport_number": null,
+  "date_of_birth": null,
+  "place_of_birth": null,
+  "sex": null,
+  "issue_date": null,
+  "expiry_date": null,
+  "issuing_authority": null,
+  "profession": null,
+  "address": null,
+  "civil_status": null,
+  "mrz_line1": null,
+  "mrz_line2": null
+}}
+"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3.  VALIDATION & REGEX RECOVERY
+# ══════════════════════════════════════════════════════════════════════════════
+
+_PLACEHOLDER_RE = re.compile(
+    r'(14\s*digit|YYYY|MM/DD|format|arabic|job\s*title|marital|your\s|number\s*here)',
+    re.IGNORECASE,
+)
+_ARABIC_GENDERS   = {'ذكر', 'أنثى', 'انثى'}
+_ARABIC_RELIGIONS = {'مسلم', 'مسيحي', 'مسيحى', 'يهودي'}
+_ARABIC_MARITAL   = {'أعزب', 'اعزب', 'متزوج', 'مطلق', 'أرمل', 'ارمل'}
+
+
+def _to_western(text: str) -> str:
+    for i, ch in enumerate('٠١٢٣٤٥٦٧٨٩'):
+        text = text.replace(ch, str(i))
+    return text
+
+
+def _clean(val) -> Optional[str]:
+    if not val:
+        return None
+    val = str(val).strip()
+    if not val or val.lower() in ('null', 'none'):
+        return None
+    if _PLACEHOLDER_RE.search(val):
+        return None
+    return val
+
+
+def _validate_id(val) -> Optional[str]:
+    if not val:
+        return None
+    digits = re.sub(r'\D', '', _to_western(str(val)))
+    return digits if len(digits) == 14 else None
+
+
+def _validate_date(val, fmt: str = "any") -> Optional[str]:
+    if not val:
+        return None
+    val = _to_western(str(val).strip())
+    patterns = {
+        "YYYY/MM":    r'^\d{4}/\d{2}$',
+        "YYYY/MM/DD": r'^\d{4}/\d{2}/\d{2}$',
+        "any":        r'^\d{4}/\d{2}(/\d{2})?$',
+    }
+    return val if re.match(patterns[fmt], val) else None
+
+
+def _regex_extract(raw: str) -> dict:
+    """Best-effort rule-based extraction — supplements model output."""
+    result: dict = {}
+    text = _to_western(raw)
+
+    # 14-digit National ID (may have spaces between groups)
+    for m in re.finditer(r'\b(\d[\d ]{12,26}\d)\b', text):
+        digits = m.group(1).replace(' ', '')
+        if len(digits) == 14:
+            result['national_id_number'] = digits
+            break
+
+    # Expiry date: after "حتى"
+    exp = re.search(r'(?:حتى|حتي)\s*(\d{4}/\d{2}/\d{2})', text)
+    if exp:
+        result['expiry_date'] = exp.group(1)
+
+    # Issue date: standalone YYYY/MM not already used as expiry
+    for m in re.finditer(r'\b(\d{4}/\d{2})\b', text):
+        d = m.group(1)
+        if d != result.get('expiry_date'):
+            result.setdefault('issue_date', d)
+            break
+
+    # Exact token matches
+    for t in _ARABIC_GENDERS:
+        if t in raw:
+            result['gender'] = 'ذكر' if t == 'ذكر' else 'أنثى'
+            break
+    for t in _ARABIC_RELIGIONS:
+        if t in raw:
+            result['religion'] = t
+            break
+    for t in _ARABIC_MARITAL:
+        if t in raw:
+            result['marital_status'] = t
+            break
+
+    return result
+
+
+def _regex_extract_dl(raw: str) -> dict:
+    """Best-effort rule-based extraction for Egyptian Driver's License."""
+    result: dict = {}
+    text = _to_western(raw)
+
+    # 14-digit National ID
+    for m in re.finditer(r'\b(\d[\d ]{12,26}\d)\b', text):
+        digits = m.group(1).replace(' ', '')
+        if len(digits) == 14:
+            result['national_id_number'] = digits
+            break
+
+    # License number: shorter alphanumeric code (6–12 chars) near رخصة / license keywords
+    ln = re.search(r'(?:رخصة|رقم)\s*[:\-]?\s*([A-Z0-9]{4,12})', text, re.IGNORECASE)
+    if ln:
+        result.setdefault('license_number', ln.group(1))
+    # Fallback: any standalone 6-10 digit number that is NOT the national ID
+    for m in re.finditer(r'\b(\d{6,10})\b', text):
+        val = m.group(1)
+        if val != result.get('national_id_number'):
+            result.setdefault('license_number', val)
+            break
+
+    # Dates  YYYY/MM/DD
+    dates_found = re.findall(r'\b(\d{4}/\d{2}/\d{2})\b', text)
+    if len(dates_found) >= 1:
+        result.setdefault('issue_date',  dates_found[0])
+    if len(dates_found) >= 2:
+        result.setdefault('expiry_date', dates_found[-1])
+
+    # License categories: individual letter codes
+    cats = re.findall(r'\b([A-E])\b', text)
+    if cats:
+        result.setdefault('license_categories', ', '.join(sorted(set(cats))))
+
+    return result
+
+
+def _regex_extract_passport(raw: str) -> dict:
+    """Best-effort rule-based extraction for Egyptian Passport."""
+    result: dict = {}
+    text = _to_western(raw)
+
+    # Passport number: letter + 8 digits  (e.g. A12345678)
+    pn = re.search(r'\b([A-Z]\d{8})\b', text)
+    if pn:
+        result['passport_number'] = pn.group(1)
+
+    # Dates YYYY/MM/DD
+    dates_found = re.findall(r'\b(\d{4}/\d{2}/\d{2})\b', text)
+    if dates_found:
+        dates_found_sorted = sorted(dates_found)
+        result.setdefault('issue_date',  dates_found_sorted[0])
+        result.setdefault('expiry_date', dates_found_sorted[-1])
+
+    # 14-digit national ID
+    for m in re.finditer(r'\b(\d[\d ]{12,26}\d)\b', text):
+        digits = m.group(1).replace(' ', '')
+        if len(digits) == 14:
+            result.setdefault('national_id_number', digits)
+            break
+
+    # MRZ lines: 44-character lines of uppercase A-Z, digits and <
+    mrz_candidates = re.findall(r'[A-Z0-9<]{44}', raw.replace(' ', ''))
+    for i, line in enumerate(mrz_candidates[:2]):
+        key = 'mrz_line1' if i == 0 else 'mrz_line2'
+        result.setdefault(key, line)
+
+    # Sex from MRZ line 2, position 21 (0-indexed: 20)
+    if result.get('mrz_line2') and len(result['mrz_line2']) >= 21:
+        sx = result['mrz_line2'][20]
+        if sx in ('M', 'F'):
+            result.setdefault('sex', sx)
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4.  MODEL BACKENDS
+#     Each backend exposes a single callable:  run_fn(image_path, prompt) -> str
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Shared model cache (keeps weights in RAM across front/back calls) ─────────
+class _Cache:
+    model     = None
+    processor = None
+    backend   = None
+
+_CACHE = _Cache()
+
+
+# ── 4a.  Qwen2-VL family (2B / 7B) and Qwen2.5-VL family (3B / 7B) ──────────
+def _make_qwen_runner(model_id: str) -> Callable:
+    """
+    Works for any Qwen2-VL or Qwen2.5-VL checkpoint.
+    Qwen2.5-VL uses Qwen2_5_VL* classes; Qwen2-VL uses Qwen2VL*.
+    We detect the family from the model ID and import accordingly.
+    """
+    def run(image_path: str, prompt: str) -> str:
+        import torch
+
+        if _CACHE.backend != model_id:
+            print(f"[{model_id}] Loading model (first run: download may take a while)...")
+
+            if "2.5" in model_id or "2_5" in model_id.lower():
+                from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+                ModelClass = Qwen2_5_VLForConditionalGeneration
+            else:
+                from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+                ModelClass = Qwen2VLForConditionalGeneration
+
+            _CACHE.model = ModelClass.from_pretrained(
+                model_id,
+                torch_dtype=torch.float32,
+                device_map="cpu",
+            )
+            _CACHE.processor = AutoProcessor.from_pretrained(model_id)
+            _CACHE.backend = model_id
+
+        try:
+            from qwen_vl_utils import process_vision_info
+        except ImportError:
+            raise ImportError("pip install qwen-vl-utils")
+
+        messages = [{"role": "user", "content": [
+            {"type": "image", "image": f"file://{os.path.abspath(image_path)}"},
+            {"type": "text",  "text": prompt},
+        ]}]
+
+        text_in = _CACHE.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True)
+        img_in, vid_in = process_vision_info(messages)
+        inputs = _CACHE.processor(
+            text=[text_in], images=img_in, videos=vid_in,
+            padding=True, return_tensors="pt")
+
+        with torch.no_grad():
+            out = _CACHE.model.generate(
+                **inputs, max_new_tokens=700,
+                temperature=0.05, do_sample=False)
+
+        return _CACHE.processor.batch_decode(
+            [o[len(i):] for i, o in zip(inputs.input_ids, out)],
+            skip_special_tokens=True,
+        )[0].strip()
+
+    return run
+
+
+# ── 4b.  Donut ────────────────────────────────────────────────────────────────
+def _run_donut(image_path: str, prompt: str) -> str:
+    """
+    Donut (Document Understanding Transformer) by Naver CLOVA.
+    It is an encoder-decoder model that reads document images.
+    We use the base checkpoint with a free-form generation task.
+    Note: Donut was pretrained on synthetic English/Korean docs;
+          Arabic accuracy is limited — best treated as a lightweight fallback.
+    Install: pip install transformers pillow torch
+    """
+    from transformers import DonutProcessor, VisionEncoderDecoderModel
+    from PIL import Image
+    import torch
+
+    MODEL_ID = "naver-clova-ix/donut-base"
+
+    if _CACHE.backend != MODEL_ID:
+        print(f"[Donut] Loading model {MODEL_ID}...")
+        _CACHE.processor = DonutProcessor.from_pretrained(MODEL_ID)
+        _CACHE.model     = VisionEncoderDecoderModel.from_pretrained(MODEL_ID)
+        _CACHE.model.eval()
+        _CACHE.backend   = MODEL_ID
+
+    proc  = _CACHE.processor
+    model = _CACHE.model
+
+    image = Image.open(image_path).convert("RGB")
+
+    # Donut uses special task tokens; we use a document-parse task
+    task_prompt = "<s_docvqa><s_question>Transcribe all text from this ID card.</s_question><s_answer>"
+    decoder_ids = proc.tokenizer(
+        task_prompt, add_special_tokens=False, return_tensors="pt"
+    ).input_ids
+
+    pixel_values = proc(image, return_tensors="pt").pixel_values
+
+    with torch.no_grad():
+        outputs = model.generate(
+            pixel_values,
+            decoder_input_ids=decoder_ids,
+            max_length=model.decoder.config.max_position_embeddings,
+            pad_token_id=proc.tokenizer.pad_token_id,
+            eos_token_id=proc.tokenizer.eos_token_id,
+            use_cache=True,
+            bad_words_ids=[[proc.tokenizer.unk_token_id]],
+            return_dict_in_generate=True,
+        )
+
+    seq = proc.batch_decode(outputs.sequences)[0]
+    # Strip Donut special tokens
+    seq = seq.replace(proc.tokenizer.eos_token, "").replace(proc.tokenizer.pad_token, "")
+    seq = re.sub(r"<[^>]+>", " ", seq).strip()
+    return seq
+
+
+# ── 4c.  ArabicOCR-Qwen2.5-VL-7B ─────────────────────────────────────────────
+def _run_arabic_qwen(image_path: str, prompt: str) -> str:
+    """
+    ArabicOCR-Qwen2.5-VL-7B — Qwen2.5-VL fine-tuned on Arabic document OCR.
+    HuggingFace: AhmedSSabir/ArabicOCR-Qwen2.5-VL-7B
+    RAM: ~8 GB (fp32 CPU) | ~4 GB (bf16 GPU)
+    Install: pip install transformers qwen-vl-utils torch
+    """
+    MODEL_ID = "AhmedSSabir/ArabicOCR-Qwen2.5-VL-7B"
+    runner = _make_qwen_runner(MODEL_ID)
+    return runner(image_path, prompt)
+
+
+# ── 4d.  Qari OCR ─────────────────────────────────────────────────────────────
+def _run_qari(image_path: str, prompt: str) -> str:
+    """
+    Qari — Arabic OCR model from ARBML.
+    HuggingFace: arbml/Qari
+    Uses a standard CausalLM + AutoTokenizer interface with image support.
+    Install: pip install transformers pillow torch
+    """
+    from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+    from PIL import Image
+    import torch
+
+    MODEL_ID = "NAMAA-Space/Qari-OCR-v0.3-VL-2B-Instruct"
+
+    if _CACHE.backend != MODEL_ID:
+        print(f"[Qari] Loading model {MODEL_ID}...")
+        _CACHE.processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
+        _CACHE.model = Qwen2VLForConditionalGeneration.from_pretrained(
+            MODEL_ID,
+            trust_remote_code=True,
+            torch_dtype=torch.float32,
+            device_map="cpu",
+        )
+        _CACHE.model.eval()
+        _CACHE.backend = MODEL_ID
+
+    image = Image.open(image_path).convert("RGB")
+
+    # Qari follows a chat-style interface similar to Qwen-VL
+    messages = [{"role": "user", "content": [
+        {"type": "image"},
+        {"type": "text", "text": prompt},
+    ]}]
+
+    text_in = _CACHE.processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True)
+    inputs = _CACHE.processor(text=text_in, images=[image], return_tensors="pt")
+
+    with torch.no_grad():
+        out = _CACHE.model.generate(**inputs, max_new_tokens=700, do_sample=False)
+
+    return _CACHE.processor.decode(out[0][inputs.input_ids.shape[-1]:],
+                                   skip_special_tokens=True).strip()
+
+
+# ── 4e.  LightOnOCR-2-1B ──────────────────────────────────────────────────────
+def _run_lighton_ocr(image_path: str, prompt: str) -> str:
+    """
+    LightOnOCR-2-1B — High-quality OCR model from LightOn AI.
+    HuggingFace: lightonai/LightOnOCR-2-1B
+    RAM: ~4.5 GB fp32 CPU
+    Install: pip install "transformers>=5.0.0" pypdfium2 pillow torch
+    """
+    from transformers import LightOnOcrForConditionalGeneration, LightOnOcrProcessor
+    from PIL import Image
+    import torch
+
+    MODEL_ID = "lightonai/LightOnOCR-2-1B-bbox"
+
+    if _CACHE.backend != MODEL_ID:
+        print(f"[LightOnOCR] Loading model {MODEL_ID}...")
+        _CACHE.processor = LightOnOcrProcessor.from_pretrained(MODEL_ID)
+        _CACHE.model = LightOnOcrForConditionalGeneration.from_pretrained(
+            MODEL_ID,
+            torch_dtype=torch.float32,
+            device_map="cpu",
+        )
+        _CACHE.model.eval()
+        _CACHE.backend = MODEL_ID
+
+    image = Image.open(image_path).convert("RGB")
+
+    # Follow the suggested chat template structure
+    messages = [{"role": "user", "content": [
+        {"type": "image"},
+        {"type": "text", "text": prompt}
+    ]}]
+    # Note: LightOnOCR is often used for full page transcription.
+    # We use the processor's chat template which handles the image token placement.
+    
+    # Use the processor's chat template to get the formatted text (untokenized)
+    text_in = _CACHE.processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=False,
+    )
+    
+    # Let the processor handle everything (input_ids, pixel_values, image_sizes)
+    inputs = _CACHE.processor(text=text_in, images=image, return_tensors="pt")
+    
+    # Ensure float32 for CPU
+    if "pixel_values" in inputs:
+        inputs["pixel_values"] = inputs["pixel_values"].to(torch.float32)
+
+    with torch.no_grad():
+        out = _CACHE.model.generate(**inputs, max_new_tokens=1024, do_sample=False)
+
+    generated_ids = out[0, inputs["input_ids"].shape[1]:]
+    return _CACHE.processor.decode(generated_ids, skip_special_tokens=True).strip()
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5.  BACKEND REGISTRY
+# ══════════════════════════════════════════════════════════════════════════════
+
+BACKENDS: dict[str, dict] = {
+    # key          display_name                                   run_fn
+    "qwen2vl-2b": {
+        "name":   "Qwen2-VL-2B-Instruct",
+        "ram":    "~3.5 GB",
+        "arabic": "★★★★★",
+        "fn":     _make_qwen_runner("Qwen/Qwen2-VL-2B-Instruct"),
+    },
+    "qwen2vl-7b": {
+        "name":   "Qwen2-VL-7B-Instruct",
+        "ram":    "~8 GB",
+        "arabic": "★★★★★",
+        "fn":     _make_qwen_runner("Qwen/Qwen2-VL-7B-Instruct"),
+    },
+    "qwen25vl-3b": {
+        "name":   "Qwen2.5-VL-3B-Instruct",
+        "ram":    "~4 GB",
+        "arabic": "★★★★★",
+        "fn":     _make_qwen_runner("Qwen/Qwen2.5-VL-3B-Instruct"),
+    },
+    "qwen25vl-7b": {
+        "name":   "Qwen2.5-VL-7B-Instruct",
+        "ram":    "~8 GB",
+        "arabic": "★★★★★",
+        "fn":     _make_qwen_runner("Qwen/Qwen2.5-VL-7B-Instruct"),
+    },
+    "arabic-qwen": {
+        "name":   "ArabicOCR-Qwen2.5-VL-7B",
+        "ram":    "~8 GB",
+        "arabic": "★★★★★",
+        "fn":     _run_arabic_qwen,
+        "note":   "Fine-tuned specifically on Arabic document OCR",
+    },
+    "donut": {
+        "name":   "Donut (naver-clova-ix/donut-base)",
+        "ram":    "~1.5 GB",
+        "arabic": "★★☆☆☆",
+        "fn":     _run_donut,
+        "note":   "Lightest option; limited Arabic support",
+    },
+    "qari": {
+        "name":   "Qari OCR (arbml/Qari)",
+        "ram":    "~5 GB",
+        "arabic": "★★★★☆",
+        "fn":     _run_qari,
+        "note":   "Arabic-focused OCR from ARBML",
+    },
+    "lighton-ocr": {
+        "name":   "LightOnOCR-2-1B",
+        "ram":    "~4.5 GB",
+        "arabic": "★★★★☆",
+        "fn":     _run_lighton_ocr,
+        "note":   "High-quality document OCR; optimized for transcription",
+    },
+}
+
+
+def list_backends() -> None:
+    print(f"\n{'ID':<15}  {'Model':<40}  {'RAM':<9}  {'Arabic':<12}  Notes")
+    print("─" * 95)
+    for key, info in BACKENDS.items():
+        note = info.get("note", "")
+        print(f"{key:<15}  {info['name']:<40}  {info['ram']:<9}  {info['arabic']:<12}  {note}")
+    print()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 6.  JSON PARSER
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _parse_json(text: str) -> dict:
+    text = re.sub(r'```(?:json)?\s*', '', text).strip().rstrip('`').strip()
+    m = re.search(r'\{.*\}', text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group())
+        except json.JSONDecodeError:
+            pass
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7.  TWO-PASS IMAGE PROCESSOR
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _process_image(image_path: str, side: str,
+                   run_fn: Callable, verbose: bool = False,
+                   doc_type: str = "national_id") -> tuple[str, dict]:
+    """
+    Returns (raw_ocr_text, validated_field_dict).
+
+    Pass 1 — model transcribes the image as raw text (no JSON bias)
+    Pass 2 — model maps its own raw text to structured JSON fields
+    Pass 3 — regex recovery fills any remaining gaps
+
+    doc_type: "national_id" | "driver_license" | "passport"
+    """
+
+    # ── Select OCR prompt ─────────────────────────────────────────────────────
+    if doc_type == "driver_license":
+        ocr_prompt = RAW_OCR_PROMPT_DL
+    elif doc_type == "passport":
+        ocr_prompt = RAW_OCR_PROMPT_PASSPORT
+    else:
+        ocr_prompt = RAW_OCR_PROMPT
+
+    # ── Pass 1: raw OCR ───────────────────────────────────────────────────────
+    print("  [Pass 1] Raw OCR transcription...")
+    raw = run_fn(image_path, ocr_prompt)
+
+    # Some models parrot the prompt back; strip it if so.
+    if raw.startswith(ocr_prompt):
+        raw = raw[len(ocr_prompt):].strip()
+
+    if verbose:
+        print(f"\n  {'─'*42}\n  RAW OCR:\n{raw}\n  {'─'*42}\n")
+
+    # ── Pass 2: structured extraction from raw text ───────────────────────────
+    print("  [Pass 2] Structured field extraction...")
+    if doc_type == "driver_license":
+        parse_prompt = build_parse_prompt_dl(raw, side)
+    elif doc_type == "passport":
+        parse_prompt = build_parse_prompt_passport(raw)
+    else:
+        parse_prompt = build_parse_prompt(raw, side)
+
+    parse_resp = run_fn(image_path, parse_prompt)
+    if verbose:
+        print(f"\n  {'─'*42}\n  PARSE RESPONSE:\n{parse_resp}\n  {'─'*42}\n")
+
+    parsed = _parse_json(parse_resp)
+
+    # ── Pass 2b: validate & clean fields ─────────────────────────────────────
+    print("  [Pass 2b] Validating and cleaning fields...")
+
+    if doc_type == "driver_license":
+        cleaned: dict = {
+            "full_name_arabic":   _clean(parsed.get("full_name_arabic")),
+            "full_name_latin":    _clean(parsed.get("full_name_latin")),
+            "national_id_number": _validate_id(parsed.get("national_id_number")),
+            "date_of_birth":      _validate_date(parsed.get("date_of_birth"),   "YYYY/MM/DD"),
+            "address":            _clean(parsed.get("address")),
+            "governorate":        _clean(parsed.get("governorate")),
+            "license_number":     _clean(parsed.get("license_number")),
+            "issue_date":         _validate_date(parsed.get("issue_date"),       "YYYY/MM/DD"),
+            "expiry_date":        _validate_date(parsed.get("expiry_date"),      "YYYY/MM/DD"),
+            "license_categories": _clean(parsed.get("license_categories")),
+            "issuing_authority":  _clean(parsed.get("issuing_authority")),
+            "traffic_unit":       _clean(parsed.get("traffic_unit")),
+        }
+        regex_fn = _regex_extract_dl
+
+    elif doc_type == "passport":
+        cleaned = {
+            "full_name_arabic":   _clean(parsed.get("full_name_arabic")),
+            "full_name_latin":    _clean(parsed.get("full_name_latin")),
+            "surname":            _clean(parsed.get("surname")),
+            "given_names":        _clean(parsed.get("given_names")),
+            "nationality":        _clean(parsed.get("nationality")),
+            "national_id_number": _validate_id(parsed.get("national_id_number")),
+            "passport_number":    _clean(parsed.get("passport_number")),
+            "date_of_birth":      _validate_date(parsed.get("date_of_birth"),   "YYYY/MM/DD"),
+            "place_of_birth":     _clean(parsed.get("place_of_birth")),
+            "sex":                parsed.get("sex") if parsed.get("sex") in ("M", "F") else None,
+            "issue_date":         _validate_date(parsed.get("issue_date"),       "YYYY/MM/DD"),
+            "expiry_date":        _validate_date(parsed.get("expiry_date"),      "YYYY/MM/DD"),
+            "issuing_authority":  _clean(parsed.get("issuing_authority")),
+            "mrz_line1":          _clean(parsed.get("mrz_line1")),
+            "mrz_line2":          _clean(parsed.get("mrz_line2")),
+        }
+        regex_fn = _regex_extract_passport
+
+    else:  # national_id (original behaviour)
+        cleaned = {
+            "full_name_arabic":   _clean(parsed.get("full_name_arabic")),
+            "address":            _clean(parsed.get("address")),
+            "district":           _clean(parsed.get("district")),
+            "governorate":        _clean(parsed.get("governorate")),
+            "national_id_number": _validate_id(parsed.get("national_id_number")),
+            "serial_number":      _clean(parsed.get("serial_number")),
+            "issue_date":         _validate_date(parsed.get("issue_date"),   "YYYY/MM"),
+            "occupation":         _clean(parsed.get("occupation")),
+            "expiry_date":        _validate_date(parsed.get("expiry_date"),  "YYYY/MM/DD"),
+            "gender":       parsed.get("gender")        if parsed.get("gender")        in _ARABIC_GENDERS   else None,
+            "religion":     parsed.get("religion")      if parsed.get("religion")      in _ARABIC_RELIGIONS else None,
+            "marital_status": parsed.get("marital_status") if parsed.get("marital_status") in _ARABIC_MARITAL else None,
+        }
+        regex_fn = _regex_extract
+
+    # ── Pass 3: regex recovery ────────────────────────────────────────────────
+    print("  [Pass 3] Regex fallback recovery...")
+    recovered = []
+    for k, v in regex_fn(raw).items():
+        if v and not cleaned.get(k):
+            cleaned[k] = v
+            recovered.append(k)
+    if recovered:
+        print(f"  ✓ Recovered via regex: {recovered}")
+
+    return raw, {k: v for k, v in cleaned.items() if v is not None}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 8.  HIGH-LEVEL EXTRACTOR
+# ══════════════════════════════════════════════════════════════════════════════
+
+class EgyptianIDExtractor:
+    """
+    Extract structured data from Egyptian National ID card images.
+
+    Usage:
+        extractor = EgyptianIDExtractor(backend="qwen2vl-2b")
+        result = extractor.extract(front_image="front.jpg", back_image="back.jpg")
+        print(result.to_json())
+    """
+
+    def __init__(self,
+                 backend: str  = "qwen2vl-2b",
+                 verbose: bool = False):
+        if backend not in BACKENDS:
+            raise ValueError(
+                f"Unknown backend: {backend!r}\n"
+                f"Available: {list(BACKENDS)}\n"
+                f"Run with --list-backends to see all options."
+            )
+        self.backend_key = backend
+        self.backend_cfg = BACKENDS[backend]
+        self.verbose     = verbose
+
+    def extract(self,
+                front_image: Optional[str] = None,
+                back_image:  Optional[str] = None) -> EgyptianIDData:
+
+        if not front_image and not back_image:
+            raise ValueError("Provide at least one image (front and/or back)")
+
+        run_fn = self.backend_cfg["fn"]
+        result = EgyptianIDData(backend_used=self.backend_cfg["name"])
+        merged: dict = {}
+
+        if front_image:
+            print(f"\n── FRONT: {front_image}")
+            raw, data = _process_image(front_image, "front", run_fn, self.verbose)
+            result.raw_text_front = raw
+            merged.update(data)
+
+        if back_image:
+            print(f"\n── BACK: {back_image}")
+            raw, data = _process_image(back_image, "back", run_fn, self.verbose)
+            result.raw_text_back = raw
+            # Back-side exclusive fields always win; front-side fields only fill gaps.
+            _BACK_ONLY = {"occupation", "issue_date", "gender", "religion",
+                          "marital_status", "expiry_date"}
+            for k, v in data.items():
+                if v and (k in _BACK_ONLY or not merged.get(k)):
+                    merged[k] = v
+
+        _FIELDS = [
+            "full_name_arabic", "address", "district", "governorate",
+            "national_id_number", "serial_number", "issue_date", "occupation",
+            "gender", "religion", "marital_status", "expiry_date",
+        ]
+        for f in _FIELDS:
+            if merged.get(f):
+                setattr(result, f, merged[f])
+
+        result.parse_national_id()
+
+        # Confidence score
+        key_fields = ["full_name_arabic", "national_id_number",
+                      "expiry_date", "gender", "occupation"]
+        filled = sum(1 for f in key_fields if getattr(result, f))
+        result.confidence = "high" if filled >= 4 else "medium" if filled >= 2 else "low"
+
+        return result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+class DriverLicenseExtractor:
+    """
+    Extract structured data from Egyptian Driver's License images.
+
+    Usage:
+        extractor = DriverLicenseExtractor(backend="qwen2vl-2b")
+        result = extractor.extract(front_image="front.jpg", back_image="back.jpg")
+        print(result.to_json())
+    """
+
+    def __init__(self,
+                 backend: str  = "qwen2vl-2b",
+                 verbose: bool = False):
+        if backend not in BACKENDS:
+            raise ValueError(
+                f"Unknown backend: {backend!r}\n"
+                f"Available: {list(BACKENDS)}\n"
+                f"Run with --list-backends to see all options."
+            )
+        self.backend_key = backend
+        self.backend_cfg = BACKENDS[backend]
+        self.verbose     = verbose
+
+    def extract(self,
+                front_image: Optional[str] = None,
+                back_image:  Optional[str] = None) -> DriverLicenseData:
+
+        if not front_image and not back_image:
+            raise ValueError("Provide at least one image (front and/or back)")
+
+        run_fn = self.backend_cfg["fn"]
+        result = DriverLicenseData(backend_used=self.backend_cfg["name"])
+        merged: dict = {}
+
+        if front_image:
+            print(f"\n── FRONT: {front_image}")
+            raw, data = _process_image(front_image, "front", run_fn, self.verbose,
+                                       doc_type="driver_license")
+            result.raw_text_front = raw
+            merged.update(data)
+
+        if back_image:
+            print(f"\n── BACK: {back_image}")
+            raw, data = _process_image(back_image, "back", run_fn, self.verbose,
+                                       doc_type="driver_license")
+            result.raw_text_back = raw
+            _BACK_ONLY = {"issue_date", "expiry_date",
+                          "license_categories", "issuing_authority", "traffic_unit"}
+            for k, v in data.items():
+                if v and (k in _BACK_ONLY or not merged.get(k)):
+                    merged[k] = v
+
+        _FIELDS = [
+            "full_name_arabic", "full_name_latin", "national_id_number",
+            "date_of_birth", "address", "governorate", "license_number",
+            "issue_date", "expiry_date", "license_categories",
+            "issuing_authority", "traffic_unit",
+        ]
+        for f in _FIELDS:
+            if merged.get(f):
+                setattr(result, f, merged[f])
+
+        # Confidence
+        key_fields = ["full_name_arabic", "national_id_number",
+                      "license_number", "expiry_date"]
+        filled = sum(1 for f in key_fields if getattr(result, f))
+        result.confidence = "high" if filled >= 3 else "medium" if filled >= 2 else "low"
+
+        return result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PassportExtractor:
+    """
+    Extract structured data from an Egyptian Passport bio-data page.
+
+    Usage:
+        extractor = PassportExtractor(backend="qwen2vl-2b")
+        result = extractor.extract(front_image="passport_data_page.jpg")
+        print(result.to_json())
+    """
+
+    def __init__(self,
+                 backend: str  = "qwen2vl-2b",
+                 verbose: bool = False):
+        if backend not in BACKENDS:
+            raise ValueError(
+                f"Unknown backend: {backend!r}\n"
+                f"Available: {list(BACKENDS)}\n"
+                f"Run with --list-backends to see all options."
+            )
+        self.backend_key = backend
+        self.backend_cfg = BACKENDS[backend]
+        self.verbose     = verbose
+
+    def extract(self, front_image: str) -> PassportData:
+        """
+        Extract data from the passport bio-data page.
+        Passports are single-image: use front_image for the data page.
+        """
+        if not front_image:
+            raise ValueError("Provide front_image (the passport bio-data page)")
+
+        run_fn = self.backend_cfg["fn"]
+        result = PassportData(backend_used=self.backend_cfg["name"])
+
+        print(f"\n── DATA PAGE: {front_image}")
+        raw, data = _process_image(front_image, "front", run_fn, self.verbose,
+                                   doc_type="passport")
+        result.raw_text_front = raw
+
+        _FIELDS = [
+            "full_name_arabic", "full_name_latin", "surname", "given_names",
+            "nationality", "national_id_number", "passport_number",
+            "date_of_birth", "place_of_birth", "sex",
+            "issue_date", "expiry_date", "issuing_authority",
+            "mrz_line1", "mrz_line2",
+        ]
+        for f in _FIELDS:
+            if data.get(f):
+                setattr(result, f, data[f])
+
+        # Use MRZ to fill any remaining gaps
+        result.parse_mrz()
+
+        # Confidence
+        key_fields = ["full_name_latin", "passport_number",
+                      "date_of_birth", "expiry_date", "sex"]
+        filled = sum(1 for f in key_fields if getattr(result, f))
+        result.confidence = "high" if filled >= 4 else "medium" if filled >= 2 else "low"
+
+        return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 9.  CLI
+# ══════════════════════════════════════════════════════════════════════════════
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="extractor",
+        description="Egyptian Document OCR — three-pass Vision LLM extractor (v4)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"""
+Document types:
+  national_id      Egyptian National ID card (front + back)   ← default
+  driver_license   Egyptian Driver's License (front + back)
+  passport         Egyptian Passport bio-data page (front only)
+
+Available backends (use --list-backends for full table):
+  qwen2vl-2b   ← default, ~3.5 GB RAM, best Arabic, recommended for CPU
+  qwen25vl-3b  — newer model, slightly more accurate, ~4 GB RAM
+  arabic-qwen  — fine-tuned on Arabic OCR, ~8 GB RAM
+  donut        — lightest at ~1.5 GB, limited Arabic
+  (and more — run --list-backends)
+
+Examples:
+  # National ID — both sides:
+  python extractor.py --doc-type national_id --front front.jpg --back back.jpg
+
+  # Driver's License — both sides:
+  python extractor.py --doc-type driver_license --front front.jpg --back back.jpg
+
+  # Passport — data page only:
+  python extractor.py --doc-type passport --front passport.jpg
+
+  # Save JSON output:
+  python extractor.py --doc-type passport --front passport.jpg --output result.json
+
+  # Debug — see raw OCR text at every pass:
+  python extractor.py --doc-type driver_license --front front.jpg --verbose
+        """
+    )
+    parser.add_argument("--doc-type", default="national_id",
+                        choices=["national_id", "driver_license", "passport"],
+                        help="Document type to extract (default: national_id)")
+    parser.add_argument("--front",   metavar="IMAGE", help="Front side / data-page image path")
+    parser.add_argument("--back",    metavar="IMAGE", help="Back side image path (not used for passport)")
+    parser.add_argument("--backend", default="qwen2vl-2b",
+                        choices=list(BACKENDS),
+                        help="Vision model backend (default: qwen2vl-2b)")
+    parser.add_argument("--output",  metavar="FILE",  help="Save JSON output to file")
+    parser.add_argument("--save-raw", metavar="FILE", help="Save raw OCR text to JSON file")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Print raw OCR and intermediate parse responses")
+    parser.add_argument("--list-backends", action="store_true",
+                        help="Print backend table and exit")
+
+    args = parser.parse_args()
+
+    start_time = time.perf_counter()
+
+    if args.list_backends:
+        list_backends()
+        return
+
+    if not args.front and not args.back:
+        parser.error("Provide --front and/or --back image path(s)")
+
+    doc_type = args.doc_type
+
+    # ── Select extractor ──────────────────────────────────────────────────────
+    if doc_type == "driver_license":
+        extractor = DriverLicenseExtractor(backend=args.backend, verbose=args.verbose)
+        result    = extractor.extract(front_image=args.front, back_image=args.back)
+        raw_data  = {
+            "raw_text_front": result.raw_text_front,
+            "raw_text_back":  result.raw_text_back,
+        }
+    elif doc_type == "passport":
+        if not args.front:
+            parser.error("--front is required for passport extraction")
+        extractor = PassportExtractor(backend=args.backend, verbose=args.verbose)
+        result    = extractor.extract(front_image=args.front)
+        raw_data  = {"raw_text_front": result.raw_text_front}
+    else:
+        extractor = EgyptianIDExtractor(backend=args.backend, verbose=args.verbose)
+        result    = extractor.extract(front_image=args.front, back_image=args.back)
+        raw_data  = {
+            "raw_text_front": result.raw_text_front,
+            "raw_text_back":  result.raw_text_back,
+        }
+
+    # Base directory for results
+    results_dir = Path("results") / doc_type / args.backend
+    if args.output or args.save_raw:
+        results_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save raw OCR if requested before potentially clearing it
+    if args.save_raw:
+        save_path = results_dir / Path(args.save_raw).name
+        save_path.write_text(json.dumps(raw_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\n✓ Raw OCR saved to: {save_path}")
+
+    # Hide raw text from output unless --verbose
+    if not args.verbose:
+        result.raw_text_front = None
+        if hasattr(result, 'raw_text_back'):
+            result.raw_text_back = None
+
+    print("\n" + "═" * 58)
+    print(f"  EXTRACTED {doc_type.upper().replace('_', ' ')} DATA")
+    print("═" * 58)
+    print(result.to_json())
+
+    if args.output:
+        save_path = results_dir / Path(args.output).name
+        save_path.write_text(result.to_json(), encoding="utf-8")
+        print(f"\n✓ Saved to: {save_path}")
+
+    elapsed = time.perf_counter() - start_time
+    print(f"\n✨ Done in {elapsed:.2f} seconds.")
+
+    if args.output or args.save_raw:
+        time_path = results_dir / "time.json"
+        time_data = {"execution_time_seconds": round(elapsed, 3)}
+        time_path.write_text(json.dumps(time_data, indent=2), encoding="utf-8")
+        print(f"✓ Execution time saved to: {time_path}")
+if __name__ == "__main__":
+    main()
