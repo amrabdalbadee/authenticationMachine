@@ -94,21 +94,24 @@ class EgyptianIDData:
 class DriverLicenseData:
     """Structured data extracted from an Egyptian Driver's License."""
 
-    # ── Front side ────────────────────────────────────────────────────────────
-    full_name_arabic:       Optional[str] = None   # الاسم كاملاً بالعربية
-    full_name_latin:        Optional[str] = None   # Name in Latin characters (if printed)
-    national_id_number:     Optional[str] = None   # 14 digits
-    date_of_birth:          Optional[str] = None   # YYYY/MM/DD
-    address:                Optional[str] = None   # العنوان
-    governorate:            Optional[str] = None   # المحافظة
-    license_number:         Optional[str] = None   # رقم الرخصة
+    # ── Personal information ───────────────────────────────────────────────────
+    full_name_arabic:       Optional[str] = None   # الاسم كاملاً بالعربية (e.g. عمرو محمد عبدالبديع اسماعيل ابراهيم)
+    full_name_latin:        Optional[str] = None   # Name in Latin characters (e.g. Amr Mohammed Abdal-badeea Ismail Ibrahim)
+    national_id_number:     Optional[str] = None   # الرقم القومي — 14 digits (e.g. 29803120201713)
+    nationality:            Optional[str] = None   # الجنسية (e.g. مصري)
+    occupation:             Optional[str] = None   # المهنة (e.g. طالب)
+    address:                Optional[str] = None   # العنوان (e.g. عمارة مهندس الري والصرف بالناصرية)
 
-    # ── Back side ─────────────────────────────────────────────────────────────
-    issue_date:             Optional[str] = None   # YYYY/MM/DD
-    expiry_date:            Optional[str] = None   # YYYY/MM/DD
-    license_categories:     Optional[str] = None   # e.g. "A, B, C" — فئات الرخصة
-    issuing_authority:      Optional[str] = None   # جهة الإصدار (e.g. مرور الجيزة)
-    traffic_unit:           Optional[str] = None   # وحدة المرور
+    # ── License details ───────────────────────────────────────────────────────
+    issuing_authority:      Optional[str] = None   # جهة الإصدار / وحدة المرور (e.g. وحدة مرور برج العرب)
+    traffic_department:     Optional[str] = None   # إدارة المرور (e.g. ادارة مرور الاسكندرية)
+    license_type:           Optional[str] = None   # نوع الرخصة (e.g. رخصه قياده خاصه)
+    license_categories:     Optional[str] = None   # فئة الرخصة — letter codes (e.g. "B")
+    issue_date:             Optional[str] = None   # تاريخ الإصدار — YYYY/MM/DD (e.g. 2018/07/15)
+    expiry_date:            Optional[str] = None   # تاريخ الانتهاء — YYYY/MM/DD (e.g. 2028/07/14)
+
+    # ── Restrictions & notes ──────────────────────────────────────────────────
+    condition:              Optional[str] = None   # الشرط / ملاحظة (e.g. يرتدي نظارة)
 
     # ── Meta ──────────────────────────────────────────────────────────────────
     confidence:    str            = "medium"
@@ -327,29 +330,25 @@ RAW_OCR_PROMPT_DL = (
 )
 
 
-def build_parse_prompt_dl(raw_text: str, side: str) -> str:
-    if side == "front":
-        spatial_hint = (
-            "1. Full Name (Arabic): The bold Arabic text near the top (e.g. محمد أحمد علي). "
-            "2. Full Name (Latin): Latin-script name if printed (may be absent). "
-            "3. National ID Number: The 14-digit number (starts with 2 or 3). "
-            "4. Date of Birth: YYYY/MM/DD format near the national ID. "
-            "5. Address: Arabic address lines below the name. "
-            "6. Governorate: The محافظة / governorate name. "
-            "7. License Number: The رقم الرخصة — typically a shorter numeric or alphanumeric code."
-        )
-    else:
-        spatial_hint = (
-            "1. Issue Date: تاريخ الإصدار — YYYY/MM/DD. "
-            "2. Expiry Date: تاريخ الانتهاء / صالحة حتى — YYYY/MM/DD. "
-            "3. License Categories: The letter codes for permitted vehicle classes "
-            "(e.g. A, B, C, D, E or Arabic equivalents like خ, ع, ج). "
-            "4. Issuing Authority: جهة الإصدار (e.g. مرور القاهرة). "
-            "5. Traffic Unit: الوحدة / وحدة المرور."
-        )
+def build_parse_prompt_dl(raw_text: str, side: str = "front") -> str:
+    spatial_hint = (
+        "1. Full Name (Arabic): Bold Arabic text (e.g. عمرو محمد عبدالبديع اسماعيل ابراهيم). "
+        "2. Full Name (Latin): Latin-script name if printed (e.g. Amr Mohammed Abdal-badeea Ismail Ibrahim). "
+        "3. National ID Number: The 14-digit number starting with 2 or 3 (e.g. 29803120201713). "
+        "4. Nationality: الجنسية (e.g. مصري). "
+        "5. Occupation: المهنة / الوظيفة (e.g. طالب). "
+        "6. Address: Arabic address text (e.g. عمارة مهندس الري والصرف بالناصرية). "
+        "7. Issuing Authority: وحدة المرور / جهة الإصدار (e.g. وحدة مرور برج العرب). "
+        "8. Traffic Department: إدارة المرور (e.g. ادارة مرور الاسكندرية). "
+        "9. License Type: نوع الرخصة (e.g. رخصه قياده خاصه). "
+        "10. License Category: فئة الرخصة — a letter code (e.g. B). "
+        "11. Issue Date: تاريخ الإصدار — YYYY/MM/DD (e.g. 2018/07/15). "
+        "12. Expiry Date: تاريخ الانتهاء — YYYY/MM/DD (e.g. 2028/07/14). "
+        "13. Condition: any restriction or note (e.g. يرتدي نظارة)."
+    )
 
     return f"""
-Act as an Egyptian Document OCR Expert. You are analyzing the {side.upper()} of an Egyptian Driver's License.
+Act as an Egyptian Document OCR Expert. You are analyzing an Egyptian Driver's License.
 
 The raw OCR text below was captured from the card:
 RAW OCR TEXT:
@@ -357,16 +356,16 @@ RAW OCR TEXT:
 {raw_text}
 \"\"\"
 
-### SPATIAL GUIDES:
+### FIELD GUIDE:
 {spatial_hint}
 
 ### EXTRACTION RULES:
-1. **Verbatim Arabic:** Extract names and addresses exactly as written in Arabic.
+1. **Verbatim Arabic:** Extract names, addresses, and text fields exactly as written in Arabic.
 2. **Digit Conversion:** Convert all Eastern Arabic numerals (٠١٢٣٤٥٦٧٨٩) to Western digits (0-9).
 3. **National ID:** Ensure the 14-digit number is a continuous string with no spaces.
-4. **Dates:** Format all dates as YYYY/MM/DD. Use 01 if day is missing (e.g., YYYY/MM → YYYY/MM/01).
-5. **License Categories:** Capture as a comma-separated string (e.g., "A, B, C").
-6. **Null Values:** If a field is not present on this side, return null.
+4. **Dates:** Format all dates as YYYY/MM/DD.
+5. **License Categories:** Capture as a comma-separated string if multiple (e.g. "B" or "A, B").
+6. **Null Values:** If a field is not present in the text, return null.
 
 ### OUTPUT:
 Return ONLY a valid JSON object with no markdown fences and no extra text:
@@ -375,15 +374,16 @@ Return ONLY a valid JSON object with no markdown fences and no extra text:
   "full_name_arabic": null,
   "full_name_latin": null,
   "national_id_number": null,
-  "date_of_birth": null,
+  "nationality": null,
+  "occupation": null,
   "address": null,
-  "governorate": null,
-  "license_number": null,
+  "issuing_authority": null,
+  "traffic_department": null,
+  "license_type": null,
+  "license_categories": null,
   "issue_date": null,
   "expiry_date": null,
-  "license_categories": null,
-  "issuing_authority": null,
-  "traffic_unit": null
+  "condition": null
 }}
 """
 
@@ -568,28 +568,22 @@ def _regex_extract_dl(raw: str) -> dict:
             result['national_id_number'] = digits
             break
 
-    # License number: shorter alphanumeric code (6–12 chars) near رخصة / license keywords
-    ln = re.search(r'(?:رخصة|رقم)\s*[:\-]?\s*([A-Z0-9]{4,12})', text, re.IGNORECASE)
-    if ln:
-        result.setdefault('license_number', ln.group(1))
-    # Fallback: any standalone 6-10 digit number that is NOT the national ID
-    for m in re.finditer(r'\b(\d{6,10})\b', text):
-        val = m.group(1)
-        if val != result.get('national_id_number'):
-            result.setdefault('license_number', val)
-            break
-
-    # Dates  YYYY/MM/DD
+    # Dates YYYY/MM/DD — first is issue, last is expiry
     dates_found = re.findall(r'\b(\d{4}/\d{2}/\d{2})\b', text)
     if len(dates_found) >= 1:
         result.setdefault('issue_date',  dates_found[0])
     if len(dates_found) >= 2:
         result.setdefault('expiry_date', dates_found[-1])
 
-    # License categories: individual letter codes
+    # License category: single letter codes A-E
     cats = re.findall(r'\b([A-E])\b', text)
     if cats:
         result.setdefault('license_categories', ', '.join(sorted(set(cats))))
+
+    # Condition: يرتدي نظارة or similar restriction text
+    cond = re.search(r'(يرتدي\s+\S+)', raw)
+    if cond:
+        result.setdefault('condition', cond.group(1))
 
     return result
 
@@ -1207,17 +1201,17 @@ class DriverLicenseExtractor:
             raw, data = _process_image(back_image, "back", run_fn, self.verbose,
                                        doc_type="driver_license")
             result.raw_text_back = raw
-            _BACK_ONLY = {"issue_date", "expiry_date",
-                          "license_categories", "issuing_authority", "traffic_unit"}
+            _BACK_ONLY = {"issuing_authority", "traffic_department", "license_type",
+                          "license_categories", "issue_date", "expiry_date", "condition"}
             for k, v in data.items():
                 if v and (k in _BACK_ONLY or not merged.get(k)):
                     merged[k] = v
 
         _FIELDS = [
             "full_name_arabic", "full_name_latin", "national_id_number",
-            "date_of_birth", "address", "governorate", "license_number",
-            "issue_date", "expiry_date", "license_categories",
-            "issuing_authority", "traffic_unit",
+            "nationality", "occupation", "address",
+            "issuing_authority", "traffic_department", "license_type",
+            "license_categories", "issue_date", "expiry_date", "condition",
         ]
         for f in _FIELDS:
             if merged.get(f):
@@ -1225,7 +1219,7 @@ class DriverLicenseExtractor:
 
         # Confidence
         key_fields = ["full_name_arabic", "national_id_number",
-                      "license_number", "expiry_date"]
+                      "issuing_authority", "expiry_date"]
         filled = sum(1 for f in key_fields if getattr(result, f))
         result.confidence = "high" if filled >= 3 else "medium" if filled >= 2 else "low"
 
