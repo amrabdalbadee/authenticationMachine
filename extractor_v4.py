@@ -587,17 +587,6 @@ def _regex_extract_dl(raw: str) -> dict:
             result['national_id_number'] = digits
             break
 
-    # License number: shorter alphanumeric code (6–12 chars) near رخصة / license keywords
-    ln = re.search(r'(?:رخصة|رقم)\s*[:\-]?\s*([A-Z0-9]{4,12})', text, re.IGNORECASE)
-    if ln:
-        result.setdefault('license_number', ln.group(1))
-    # Fallback: any standalone 6-10 digit number that is NOT the national ID
-    for m in re.finditer(r'\b(\d{6,10})\b', text):
-        val = m.group(1)
-        if val != result.get('national_id_number'):
-            result.setdefault('license_number', val)
-            break
-
     # Dates  YYYY/MM/DD
     dates_found = re.findall(r'\b(\d{4}/\d{2}/\d{2})\b', text)
     if len(dates_found) >= 1:
@@ -1227,17 +1216,17 @@ class DriverLicenseExtractor:
             raw, data = _process_image(back_image, "back", run_fn, self.verbose,
                                        doc_type="driver_license")
             result.raw_text_back = raw
-            _BACK_ONLY = {"issue_date", "expiry_date",
-                          "license_categories", "issuing_authority", "traffic_unit"}
+            _BACK_ONLY = {"issuing_authority", "traffic_department", "license_type",
+                          "license_categories", "issue_date", "expiry_date", "condition"}
             for k, v in data.items():
                 if v and (k in _BACK_ONLY or not merged.get(k)):
                     merged[k] = v
 
         _FIELDS = [
             "full_name_arabic", "full_name_latin", "national_id_number",
-            "date_of_birth", "address", "governorate", "license_number",
-            "issue_date", "expiry_date", "license_categories",
-            "issuing_authority", "traffic_unit",
+            "nationality", "occupation", "address",
+            "issuing_authority", "traffic_department", "license_type",
+            "license_categories", "issue_date", "expiry_date", "condition",
         ]
         for f in _FIELDS:
             if merged.get(f):
@@ -1245,7 +1234,7 @@ class DriverLicenseExtractor:
 
         # Confidence
         key_fields = ["full_name_arabic", "national_id_number",
-                      "license_number", "expiry_date"]
+                      "issuing_authority", "expiry_date"]
         filled = sum(1 for f in key_fields if getattr(result, f))
         result.confidence = "high" if filled >= 3 else "medium" if filled >= 2 else "low"
 
