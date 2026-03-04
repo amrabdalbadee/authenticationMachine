@@ -328,44 +328,42 @@ RAW_OCR_PROMPT_DL = (
 
 def build_parse_prompt_dl(raw_text: str, side: str = "front") -> str:
     spatial_hint = (
-        "1. Full Name (Arabic)   → The longest Arabic phrase (e.g. عمرو محمد عبدالبديع اسماعيل ابراهيم). Often found above the Latin name.\\n"
-        "2. Full Name (Latin)    → Any Roman/Latin-script name line (e.g. Amr Mohammed Abdal-badeea Ismail Ibrahim).\\n"
-        "3. National ID Number   → Exactly 14 consecutive digits starting with 2 or 3 (e.g. 29803120201713). Remove all spaces.\\n"
-        "4. Nationality          → Usually the word 'مصرى' or 'EGYPTIAN', which may stand alone without a label.\\n"
-        "5. Occupation           → A job title (e.g. طالب، مهندس، موظف), missing a label.\\n"
-        "6. Address              → A physical location description (e.g. عمارة مهندس الرى والصرف بالناصرية). Extract the text even if there's no 'العنوان' label.\\n"
-        "7. Issuing Authority    → Contains terms like 'وحدة مرور' or 'وحده مرور' (e.g. وحده مرور برج العرب).\\n"
-        "8. Traffic Department   → Contains terms like 'إدارة مرور' or 'ادارة مرور' (e.g. ادارة مرور الاسكندرية).\\n"
-        "9. License Type         → Describes the vehicle type, usually starts with 'رخصه قياده' or 'رخصة قيادة' (e.g. رخصه قياده خاصه).\\n"
-        "10. License Category    → Letter codes (A, B, C, D, E). Join multiple as comma-separated (e.g. \"B\" or \"A, B\").\\n"
-        "11. Issue Date          → The date following 'تاريخ التحرير' or 'تاريخ الإصدار'. Format YYYY/MM/DD.\\n"
-        "12. Expiry Date         → The date following 'نهاية الترخيص' or 'صالحة حتى'. Format YYYY/MM/DD.\\n"
-        "13. Condition           → Any restriction note printed like 'يرتدى نظارة' (wears glasses).\\n"
+        "1. Traffic Department → Look for 'ادارة مرور' or 'إدارة مرور' followed by the governorate (e.g., ادارة مرور الاسكندرية).\n"
+        "2. Issuing Authority → Look for 'وحده مرور' or 'وحدة مرور' followed by the area (e.g., وحده مرور برج العرب).\n"
+        "3. License Type → Look for 'رخصه قياده' or 'رخصة قيادة' followed by the type (e.g., خاصه, مهنيه).\n"
+        "4. National ID Number → Exactly 14 continuous digits starting with 2 or 3.\n"
+        "5. Full Name (Arabic) → The longest continuous Arabic name string (e.g., عمرو محمد عبدالبديع اسماعيل ابراهيم).\n"
+        "6. Full Name (Latin) → The full name printed in English/Latin characters.\n"
+        "7. Address → The physical address block, usually printed under the Latin name (e.g., عمارة مهندس الرى والصرف بالناصرية).\n"
+        "8. Nationality → Look for 'مصرى', 'مصري', or 'Egyptian'.\n"
+        "9. Occupation → A job title printed near the nationality (e.g., طالب, مهندس, موظف).\n"
+        "10. Issue Date → Look for 'تاريخ التحرير'. Extract the date and strictly format as YYYY/MM/DD.\n"
+        "11. Expiry Date → Look for 'نهاية الترخيص'. Extract the date and strictly format as YYYY/MM/DD.\n"
+        "12. Condition → Any printed restriction text like 'يرتدى نظارة' (wears glasses).\n"
+        "13. License Categories → An isolated Latin letter representing the vehicle class (e.g., B, A).\n"
     )
 
     return f"""
-Act as an Egyptian Document OCR Expert specialised in Arabic handwriting and printed text.
-You are analysing an Egyptian Driver's Licence (both sides combined in the raw text below).
+Act as an Expert Data Extractor specialized in Egyptian Driver's Licenses.
+Analyze the raw OCR text below. Some text may be fragmented or lack traditional labels.
 
 RAW OCR TEXT:
 \"\"\"
 {raw_text}
 \"\"\"
 
-### FIELD GUIDE (search the whole text contextually):
+### FIELD GUIDE:
 {spatial_hint}
 
 ### EXTRACTION RULES:
-1. **Values often lack labels**: In Egyptian driver's licenses, values like Name, Address, Occupation, and Nationality appear directly without preceding labels (like "الاسم:" or "العنوان:"). Do NOT look for labels; extract the values directly based on context and format.
-2. **Verbatim Arabic** — copy names, occupations, addresses exactly as printed in Arabic.
-3. **Digit Conversion** — replace Eastern Arabic digits ٠١٢٣٤٥٦٧٨٩ with 0-9.
-4. **National ID** — must be exactly 14 digits, no spaces or dashes.
-5. **Dates** — output as YYYY/MM/DD only. Issue year must be 2000–2030; reject implausible values.
-6. **Issuing Authority vs Traffic Department** — extract both separately.
-7. **License Categories** — look for isolated letter codes (like B).
-8. **Null** — only return null if the concept is genuinely absent after searching the full text.
+1. **Verbatim Arabic**: Extract values exactly as printed (do not correct spelling like 'رخصه' to 'رخصة' if printed with a 'ه').
+2. **Digit Conversion**: Replace all Eastern Arabic digits (٠١٢٣٤٥٦٧٨٩) with Western digits (0-9).
+3. **National ID**: Ensure it is exactly 14 digits with no spaces or dashes.
+4. **Dates**: You MUST format dates as YYYY/MM/DD regardless of how they are printed (e.g., 15/07/2018 becomes 2018/07/15).
+5. **No Hallucinations**: Return null if a value is genuinely missing from the raw text.
 
-### OUTPUT — return ONLY this JSON, no markdown, no extra text:
+### OUTPUT:
+Return ONLY a valid JSON object. No markdown formatting, no explanations.
 
 {{
   "full_name_arabic": null,
@@ -573,41 +571,63 @@ def _regex_extract_dl(raw: str) -> dict:
     result: dict = {}
     text = _to_western(raw)
 
-    # 14-digit National ID
-    for m in re.finditer(r'\b(\d[\d ]{12,26}\d)\b', text):
+    # 1. 14-digit National ID (Starts with 2 or 3)
+    for m in re.finditer(r'(?<!\d)(\d[\d ]{12,26}\d)(?!\d)', text):
         digits = m.group(1).replace(' ', '')
-        if len(digits) == 14:
+        if len(digits) == 14 and digits[0] in ('2', '3'):
             result['national_id_number'] = digits
             break
 
-    # License number: shorter alphanumeric code (6–12 chars) near رخصة / license keywords
-    ln = re.search(r'(?:رخصة|رقم)\s*[:\-]?\s*([A-Z0-9]{4,12})', text, re.IGNORECASE)
-    if ln:
-        result.setdefault('license_number', ln.group(1))
-    # Fallback: any standalone 6-10 digit number that is NOT the national ID
-    for m in re.finditer(r'\b(\d{6,10})\b', text):
-        val = m.group(1)
-        if val != result.get('national_id_number'):
-            result.setdefault('license_number', val)
-            break
+    # 2. Traffic Department (e.g., ادارة مرور الاسكندرية)
+    td_match = re.search(r'((?:إدارة|ادارة)\s*مرور\s+[^\n\d]+)', text)
+    if td_match:
+        result['traffic_department'] = td_match.group(1).strip()
 
-    # Dates YYYY/MM/DD
-    issue_match = re.search(r'(?:تاريخ التحرير|تاريخ الإصدار)\s*(?::|-)?\s*(\d{4}/\d{2}/\d{2})', text)
+    # 3. Issuing Authority (e.g., وحده مرور برج العرب)
+    ia_match = re.search(r'((?:وحدة|وحده)\s*مرور\s+[^\n\d]+)', text)
+    if ia_match:
+        result['issuing_authority'] = ia_match.group(1).strip()
+
+    # 4. License Type (e.g., رخصه قياده خاصه)
+    lt_match = re.search(r'((?:رخصة|رخصه)\s*(?:قيادة|قياده)\s*(?:خاصة|خاصه|مهنية|مهنيه|ثالثة|ثالثه|ثانية|ثانيه|أولى|اولى|دراجة|دراجه)[^\n\d]*)', text)
+    if lt_match:
+        result['license_type'] = lt_match.group(1).strip()
+
+    # 5. Condition
+    cond_match = re.search(r'(يرتدي نظارة|يرتدى نظارة)', text)
+    if cond_match:
+        result['condition'] = cond_match.group(1).strip()
+
+    # 6. Nationality
+    nat_match = re.search(r'\b(مصرى|مصري|Egyptian)\b', text, re.IGNORECASE)
+    if nat_match:
+        result['nationality'] = nat_match.group(1).strip()
+
+    # 7. Date parsing helper (Handles DD/MM/YYYY -> YYYY/MM/DD flip)
+    def parse_date(date_str):
+        date_str = re.sub(r'\s+', '', date_str)
+        m = re.search(r'(\d{2,4})[/\\\-](\d{2})[/\\\-](\d{2,4})', date_str)
+        if m:
+            p1, p2, p3 = m.groups()
+            if len(p3) == 4:     # Was DD/MM/YYYY
+                return f"{p3}/{p2}/{p1}"
+            elif len(p1) == 4:   # Was YYYY/MM/DD
+                return f"{p1}/{p2}/{p3}"
+        return None
+
+    # 8. Issue Date
+    issue_match = re.search(r'(?:تاريخ التحرير|تاريخ الإصدار|تاريخ الاصدار)\s*[:\-]?\s*([\d\s/\\-]+)', text)
     if issue_match:
-        result.setdefault('issue_date', issue_match.group(1))
+        d = parse_date(issue_match.group(1))
+        if d: result['issue_date'] = d
 
-    expiry_match = re.search(r'(?:نهاية الترخيص|تاريخ الانتهاء|صالحة حتى)\s*(?::|-)?\s*(\d{4}/\d{2}/\d{2})', text)
-    if expiry_match:
-        result.setdefault('expiry_date', expiry_match.group(1))
+    # 9. Expiry Date
+    exp_match = re.search(r'(?:نهاية الترخيص|تاريخ الانتهاء|صالحة حتى|صالحه حتي)\s*[:\-]?\s*([\d\s/\\-]+)', text)
+    if exp_match:
+        d = parse_date(exp_match.group(1))
+        if d: result['expiry_date'] = d
 
-    dates_found = re.findall(r'\b(\d{4}/\d{2}/\d{2})\b', text)
-    if dates_found:
-        if not result.get('issue_date'):
-            result.setdefault('issue_date', dates_found[0])
-        if not result.get('expiry_date') and len(dates_found) >= 2:
-            result.setdefault('expiry_date', dates_found[-1])
-
-    # License categories: individual letter codes
+    # 10. License Categories
     cats = re.findall(r'\b([A-E])\b', text)
     if cats:
         result.setdefault('license_categories', ', '.join(sorted(set(cats))))
