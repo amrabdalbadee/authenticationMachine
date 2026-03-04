@@ -29,10 +29,10 @@ Document type usage
   python extractor.py --doc-type national_id --front front.jpg --back back.jpg
 
   # Driver's License:
-  python extractor.py --doc-type driver_license --front front.jpg --back back.jpg
+  python extractor.py --doc-type driver_license --image front.jpg 
 
   # Passport (single image — data page):
-  python extractor.py --doc-type passport --front passport_data_page.jpg
+  python extractor.py --doc-type passport --image passport_data_page.jpg
 """
 
 import json
@@ -328,29 +328,19 @@ RAW_OCR_PROMPT_DL = (
 
 def build_parse_prompt_dl(raw_text: str, side: str = "front") -> str:
     spatial_hint = (
-        "1. Full Name (Arabic)   → الاسم — bold Arabic text, usually the longest Arabic phrase "
-        "(e.g. عمرو محمد عبدالبديع اسماعيل ابراهيم). "
-        "2. Full Name (Latin)    → any Roman/Latin-script name line "
-        "(e.g. Amr Mohammed Abdal-badeea Ismail Ibrahim). "
-        "3. National ID Number   → الرقم القومي — exactly 14 consecutive digits starting with 2 or 3 "
-        "(e.g. 29803120201713). Remove all spaces. "
-        "4. Nationality          → الجنسية — the word that follows this label "
-        "(e.g. مصري or EGYPTIAN). "
-        "5. Occupation           → المهنة / الوظيفة — the word or phrase after this label "
-        "(e.g. طالب، مهندس، موظف). "
-        "6. Address              → العنوان — all Arabic address lines following this label "
-        "(e.g. عمارة مهندس الري والصرف بالناصرية مركز أبو قرقاص المنيا). "
-        "7. Issuing Authority    → جهة الإصدار / وحدة المرور — e.g. وحدة مرور برج العرب. "
-        "8. Traffic Department   → إدارة المرور — e.g. ادارة مرور الاسكندرية. "
-        "9. License Type         → نوع الرخصة — e.g. رخصه قياده خاصه. "
-        "10. License Category    → فئة الرخصة — one or more letter codes (A B C D E) "
-        "printed in a grid or listed; join multiple as comma-separated (e.g. \"B\" or \"A, B\"). "
-        "11. Issue Date          → تاريخ الإصدار — YYYY/MM/DD. "
-        "IMPORTANT: The year must be recent (2000–2030). Reject any year before 2000. "
-        "12. Expiry Date         → تاريخ الانتهاء / صالحة حتى — YYYY/MM/DD. "
-        "SANITY CHECK: expiry_date year must be >= issue_date year. "
-        "13. Condition           → any printed restriction or note, e.g. يرتدي نظارة. "
-        "Return null if absent."
+        "1. Full Name (Arabic)   → The longest Arabic phrase (e.g. عمرو محمد عبدالبديع اسماعيل ابراهيم). Often found above the Latin name.\\n"
+        "2. Full Name (Latin)    → Any Roman/Latin-script name line (e.g. Amr Mohammed Abdal-badeea Ismail Ibrahim).\\n"
+        "3. National ID Number   → Exactly 14 consecutive digits starting with 2 or 3 (e.g. 29803120201713). Remove all spaces.\\n"
+        "4. Nationality          → Usually the word 'مصرى' or 'EGYPTIAN', which may stand alone without a label.\\n"
+        "5. Occupation           → A job title (e.g. طالب، مهندس، موظف), missing a label.\\n"
+        "6. Address              → A physical location description (e.g. عمارة مهندس الرى والصرف بالناصرية). Extract the text even if there's no 'العنوان' label.\\n"
+        "7. Issuing Authority    → Contains terms like 'وحدة مرور' or 'وحده مرور' (e.g. وحده مرور برج العرب).\\n"
+        "8. Traffic Department   → Contains terms like 'إدارة مرور' or 'ادارة مرور' (e.g. ادارة مرور الاسكندرية).\\n"
+        "9. License Type         → Describes the vehicle type, usually starts with 'رخصه قياده' or 'رخصة قيادة' (e.g. رخصه قياده خاصه).\\n"
+        "10. License Category    → Letter codes (A, B, C, D, E). Join multiple as comma-separated (e.g. \"B\" or \"A, B\").\\n"
+        "11. Issue Date          → The date following 'تاريخ التحرير' or 'تاريخ الإصدار'. Format YYYY/MM/DD.\\n"
+        "12. Expiry Date         → The date following 'نهاية الترخيص' or 'صالحة حتى'. Format YYYY/MM/DD.\\n"
+        "13. Condition           → Any restriction note printed like 'يرتدى نظارة' (wears glasses).\\n"
     )
 
     return f"""
@@ -362,18 +352,18 @@ RAW OCR TEXT:
 {raw_text}
 \"\"\"
 
-### FIELD GUIDE (read every label carefully):
+### FIELD GUIDE (search the whole text contextually):
 {spatial_hint}
 
 ### EXTRACTION RULES:
-1. **Do not skip fields** — search the entire raw text for every field before returning null.
+1. **Values often lack labels**: In Egyptian driver's licenses, values like Name, Address, Occupation, and Nationality appear directly without preceding labels (like "الاسم:" or "العنوان:"). Do NOT look for labels; extract the values directly based on context and format.
 2. **Verbatim Arabic** — copy names, occupations, addresses exactly as printed in Arabic.
 3. **Digit Conversion** — replace Eastern Arabic digits ٠١٢٣٤٥٦٧٨٩ with 0-9.
 4. **National ID** — must be exactly 14 digits, no spaces or dashes.
 5. **Dates** — output as YYYY/MM/DD only. Issue year must be 2000–2030; reject implausible values.
-6. **Issuing Authority vs Traffic Department** — extract both separately if both labels appear.
-7. **License Categories** — look for letter codes printed in boxes or a table on the back side.
-8. **Null** — only return null if the field is genuinely absent after searching the full text.
+6. **Issuing Authority vs Traffic Department** — extract both separately.
+7. **License Categories** — look for isolated letter codes (like B).
+8. **Null** — only return null if the concept is genuinely absent after searching the full text.
 
 ### OUTPUT — return ONLY this JSON, no markdown, no extra text:
 
@@ -398,14 +388,15 @@ RAW OCR TEXT:
 # ── 2c. Passport prompts ──────────────────────────────────────────────────────
 
 RAW_OCR_PROMPT_PASSPORT = (
-    "هذا جواز سفر مصري. "
-    "انسخ كل كلمة عربية وكل حرف لاتيني وكل رقم تراه تماماً كما هو مطبوع، بما في ذلك سطور MRZ. "
-    "اكتب النص الخام فقط بدون ترجمة أو شرح.\n\n"
+    "استخرج جميع النصوص المكتوبة باللغة العربية والإنجليزية من جواز السفر. "
+    "من المهم جداً استخراج: الرقم القومي (14 رقم)، العنوان، المهنة، الموقف التجنيدي، والاسم بالكامل. "
+    "انسخ كل كلمة ورقم كما هو في الصورة تماماً، بما في ذلك سطور MRZ في الأسفل.\n\n"
     "--- ENGLISH ---\n"
     "This is an Egyptian Passport. "
-    "Transcribe every Arabic word, every Latin character, and every number exactly as printed, "
-    "including the two MRZ lines at the bottom. "
-    "No translation, no explanation — output RAW TEXT ONLY."
+    "Transcribe ALL text, focusing on both Arabic and English fields. "
+    "It is CRITICAL to extract the Arabic fields: National ID (الرقم القومي), Address (العنوان), "
+    "Profession (المهنة), Civil Status (الموقف التجنيدي), and Full Arabic Name. "
+    "Transcribe accurately, including the MRZ lines. Output RAW TEXT ONLY."
 )
 
 
@@ -414,7 +405,9 @@ def build_parse_prompt_passport(raw_text: str) -> str:
 Act as an Egyptian Document OCR Expert specialised in Egyptian passports.
 You are analysing the BIO-DATA PAGE of an Egyptian Passport.
 
-RAW OCR TEXT:
+IMPORTANT: The raw OCR text might be incomplete. Look closely at the actual image to find missing Arabic fields such as 'الرقم القومي', 'العنوان', 'المهنة', and 'الموقف التجنيدي'.
+
+RAW OCR TEXT (for reference):
 \"\"\"
 {raw_text}
 \"\"\"
@@ -598,12 +591,21 @@ def _regex_extract_dl(raw: str) -> dict:
             result.setdefault('license_number', val)
             break
 
-    # Dates  YYYY/MM/DD
+    # Dates YYYY/MM/DD
+    issue_match = re.search(r'(?:تاريخ التحرير|تاريخ الإصدار)\s*(?::|-)?\s*(\d{4}/\d{2}/\d{2})', text)
+    if issue_match:
+        result.setdefault('issue_date', issue_match.group(1))
+
+    expiry_match = re.search(r'(?:نهاية الترخيص|تاريخ الانتهاء|صالحة حتى)\s*(?::|-)?\s*(\d{4}/\d{2}/\d{2})', text)
+    if expiry_match:
+        result.setdefault('expiry_date', expiry_match.group(1))
+
     dates_found = re.findall(r'\b(\d{4}/\d{2}/\d{2})\b', text)
-    if len(dates_found) >= 1:
-        result.setdefault('issue_date',  dates_found[0])
-    if len(dates_found) >= 2:
-        result.setdefault('expiry_date', dates_found[-1])
+    if dates_found:
+        if not result.get('issue_date'):
+            result.setdefault('issue_date', dates_found[0])
+        if not result.get('expiry_date') and len(dates_found) >= 2:
+            result.setdefault('expiry_date', dates_found[-1])
 
     # License categories: individual letter codes
     cats = re.findall(r'\b([A-E])\b', text)
@@ -631,11 +633,21 @@ def _regex_extract_passport(raw: str) -> dict:
         result.setdefault('expiry_date', dates_found_sorted[-1])
 
     # 14-digit national ID
-    for m in re.finditer(r'\b(\d[\d ]{12,26}\d)\b', text):
+    for m in re.finditer(r'(?<!\d)(\d[\d ]{12,26}\d)(?!\d)', text):
         digits = m.group(1).replace(' ', '')
         if len(digits) == 14:
             result.setdefault('national_id_number', digits)
             break
+
+    # Address
+    addr = re.search(r'(?:العنوان|ال عنوان)\s*[:\-]?\s*([^\n]+)', raw)
+    if addr:
+        result.setdefault('address', addr.group(1).strip())
+
+    # Civil Status
+    civil = re.search(r'(?:الموقف التجنيدي|الموقف التجنيدى)\s*[:\-]?\s*([^\n]+)', raw)
+    if civil:
+        result.setdefault('civil_status', civil.group(1).strip())
 
     # MRZ lines: 44-character lines of uppercase A-Z, digits and <
     mrz_candidates = re.findall(r'[A-Z0-9<]{44}', raw.replace(' ', ''))
@@ -1456,11 +1468,8 @@ Examples:
         save_path.write_text(json.dumps(raw_data, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"\n✓ Raw OCR saved to: {save_path}")
 
-    # Hide raw text from output unless --verbose
-    if not args.verbose:
-        result.raw_text_front = None
-        if hasattr(result, 'raw_text_back'):
-            result.raw_text_back = None
+    # Intentionally retaining raw_text_front and raw_text_back even without --verbose
+    # so that the user can inspect the OCR output in the parsed JSON.
 
     print("\n" + "═" * 58)
     print(f"  EXTRACTED {doc_type.upper().replace('_', ' ')} DATA")
