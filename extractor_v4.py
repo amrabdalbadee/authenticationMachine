@@ -403,56 +403,30 @@ def build_parse_prompt_passport(raw_text: str) -> str:
 Act as an Egyptian Document OCR Expert specialised in Egyptian passports.
 You are analysing the BIO-DATA PAGE of an Egyptian Passport.
 
-IMPORTANT: The raw OCR text might be incomplete. Look closely at the actual image to find missing Arabic fields such as 'الرقم القومي', 'العنوان', 'المهنة', and 'الموقف التجنيدي'.
+IMPORTANT: The data is printed in both Arabic (on the right) and English (on the left). 
+You must scan the entire page for specific labels.
 
 RAW OCR TEXT (for reference):
 \"\"\"
 {raw_text}
 \"\"\"
 
-### FIELD GUIDE (search carefully for every label):
-1.  Passport Number    → رقم الجواز / Passport No — letter + 8 digits in top-right area
-                         (e.g. A26171466).
-2.  Full Name Arabic   → الاسم / الاسم كاملاً — bold Arabic text on the right half
-                         (e.g. محمد سليمان ابراهيم سليمان وحق).
-3.  Full Name Latin    → Full Name / الاسم — Latin-script line below the label
-                         (e.g. MOHAMED SOLIMAN IBRAHIM SOLIMAN WAHSH).
-4.  Surname            → Family-name portion of the Latin full name (first word(s) before <<
-                         in MRZ line 1, or the SURNAME field if labelled).
-5.  Given Names        → Given-name portion of the Latin full name.
-6.  Nationality        → Nationality / الجنسية — e.g. EGYPTIAN or مصري.
-7.  Date of Birth      → Date of Birth / تاريخ الميلاد — YYYY/MM/DD.
-8.  Place of Birth     → Place of Birth / محل الميلاد — e.g. SHARKIA / الشرقية.
-9.  Sex                → Sex / النوع — ذكر → "M", أنثى → "F", or M/F as printed.
-10. Issue Date         → Date of Issue / تاريخ الإصدار — YYYY/MM/DD.
-11. Expiry Date        → Date of Expiry / تاريخ الانتهاء — YYYY/MM/DD.
-12. Issuing Authority  → Issuing Office / جهة إصدار الجواز — e.g. 1.
-13. National ID Number → الرقم القومي — exactly 14 digits; also decodable from MRZ line 2
-                         positions 29–42 (strip trailing < characters, must be 14 digits).
-14. Profession         → Profession / الوظيفة والمهنة — text that follows this label
-                         (e.g. B.OF MASS COMMUNICATION or طالب).
-                         IMPORTANT: This field is often printed in small text below the name block.
-15. Address            → العنوان — Arabic or bilingual address following this label.
-                         IMPORTANT: Look for this label carefully; it may appear in small print.
-16. Civil Status       → الموقف التجنيدي — text following this label
-                         (e.g. غير مطلوب or أدى الخدمة).
-                         IMPORTANT: This label may appear near the bottom of the page.
-17. MRZ Line 1         → First machine-readable line, starts with P<EGY, exactly 44 chars.
-18. MRZ Line 2         → Second machine-readable line, exactly 44 chars (digits and <).
+### SPATIAL & LABEL GUIDE:
+1.  **Passport Number**: Top right. Label: "رقم الجواز / Passport No". (e.g., A37484706).
+2.  **Full Name Arabic**: Right side, bold. Label: "الاسم / Full Name".
+3.  **National ID Number**: Look for "الرقم القومي" followed by 14 digits. This is often printed in a smaller font near the middle or bottom of the Arabic text block.
+4.  **Profession (المهنة)**: Look for "المهنة" or "الوظيفة". (e.g., ELECTRICAL ENGINEER / مهندس كهرباء).
+5.  **Address (العنوان)**: Look for "العنوان". (e.g., الجمهورية العربية مصرية).
+6.  **Civil Status (الموقف التجنيدي)**: Look for the label "الموقف التجنيدي" followed by a code or description (e.g., 18).
+7.  **MRZ Lines**: The two lines at the very bottom (44 characters each).
 
 ### EXTRACTION RULES:
-1. **Do not skip fields** — scan the entire raw text for every label before returning null.
-2. **National ID from MRZ** — if الرقم القومي label is absent, extract from MRZ line 2:
-   characters at positions 29–42 (1-indexed), strip trailing '<', verify it is 14 digits.
-3. **Verbatim** — copy field values exactly as written; do not paraphrase.
-4. **Digit Conversion** — replace ٠١٢٣٤٥٦٧٨٩ with 0-9 everywhere.
-5. **MRZ Lines** — preserve every '<' character exactly; do not add or remove any.
-6. **Dates** — format as YYYY/MM/DD.
-7. **Sex** — normalise to "M" or "F" only.
-8. **Null** — only return null if the field is genuinely absent after a thorough search.
+1. **Digit Conversion**: Replace all ٠١٢٣٤٥٦٧٨٩ with 0-9.
+2. **National ID**: Ensure it is 14 digits. If the "الرقم القومي" label isn't found, try to extract it from the MRZ Line 2 (positions 29–42).
+3. **Dates**: Use YYYY/MM/DD format.
+4. **Verbatim**: Copy names and addresses exactly as they appear.
 
-### OUTPUT — return ONLY this JSON, no markdown, no extra text:
-
+### OUTPUT — return ONLY valid JSON:
 {{
   "full_name_arabic": null,
   "full_name_latin": null,
@@ -636,53 +610,51 @@ def _regex_extract_dl(raw: str) -> dict:
 
 
 def _regex_extract_passport(raw: str) -> dict:
-    """Best-effort rule-based extraction for Egyptian Passport."""
+    """Enhanced rule-based extraction for Egyptian Passport."""
     result: dict = {}
-    text = _to_western(raw)
+    # Convert numbers for processing
+    text_western = _to_western(raw)
 
-    # Passport number: letter + 8 digits  (e.g. A12345678)
-    pn = re.search(r'\b([A-Z]\d{8})\b', text)
+    # 1. National ID (14 digits) - Look for label or raw 14-digit string
+    nid_match = re.search(r'(?:الرقم القومي|القومي)\s*[:\-]?\s*(\d{14})', text_western)
+    if nid_match:
+        result['national_id_number'] = nid_match.group(1)
+    else:
+        # Fallback: any standalone 14 digits
+        standalone_nid = re.search(r'(?<!\d)(\d{14})(?!\d)', text_western)
+        if standalone_nid:
+            result['national_id_number'] = standalone_nid.group(1)
+
+    # 2. Passport Number (Letter + 8 digits)
+    pn = re.search(r'\b([A-Z]\d{8})\b', text_western)
     if pn:
         result['passport_number'] = pn.group(1)
 
-    # Dates YYYY/MM/DD
-    dates_found = re.findall(r'\b(\d{4}/\d{2}/\d{2})\b', text)
-    if dates_found:
-        dates_found_sorted = sorted(dates_found)
-        result.setdefault('issue_date',  dates_found_sorted[0])
-        result.setdefault('expiry_date', dates_found_sorted[-1])
+    # 3. Profession / المهنة
+    prof_match = re.search(r'(?:المهنة|المهنه|الوظيفة)\s*[:\-]?\s*([^\n]+)', raw)
+    if prof_match:
+        result['profession'] = prof_match.group(1).strip()
 
-    # 14-digit national ID
-    for m in re.finditer(r'(?<!\d)(\d[\d ]{12,26}\d)(?!\d)', text):
-        digits = m.group(1).replace(' ', '')
-        if len(digits) == 14:
-            result.setdefault('national_id_number', digits)
-            break
+    # 4. Civil Status / الموقف التجنيدي
+    civil_match = re.search(r'(?:الموقف التجنيدي|تجنيد)\s*[:\-]?\s*(\d+|[^\n]+)', raw)
+    if civil_match:
+        result['civil_status'] = civil_match.group(1).strip()
 
-    # Address
-    addr = re.search(r'(?:العنوان|ال عنوان)\s*[:\-]?\s*([^\n]+)', raw)
-    if addr:
-        result.setdefault('address', addr.group(1).strip())
+    # 5. Dates (YYYY/MM/DD)
+    # Passports usually have Issue and Expiry dates. 
+    # Issue is generally the earlier date, Expiry is the later.
+    found_dates = re.findall(r'(\d{4}/\d{2}/\d{2})', text_western)
+    if len(found_dates) >= 2:
+        sorted_dates = sorted(found_dates)
+        result['issue_date'] = sorted_dates[0]
+        result['expiry_date'] = sorted_dates[-1]
 
-    # Civil Status
-    civil = re.search(r'(?:الموقف التجنيدي|الموقف التجنيدى)\s*[:\-]?\s*([^\n]+)', raw)
-    if civil:
-        result.setdefault('civil_status', civil.group(1).strip())
-
-    # MRZ lines: 44-character lines of uppercase A-Z, digits and <
-    mrz_candidates = re.findall(r'[A-Z0-9<]{44}', raw.replace(' ', ''))
-    for i, line in enumerate(mrz_candidates[:2]):
-        key = 'mrz_line1' if i == 0 else 'mrz_line2'
-        result.setdefault(key, line)
-
-    # Sex from MRZ line 2, position 21 (0-indexed: 20)
-    if result.get('mrz_line2') and len(result['mrz_line2']) >= 21:
-        sx = result['mrz_line2'][20]
-        if sx in ('M', 'F'):
-            result.setdefault('sex', sx)
+    # 6. MRZ Recovery
+    mrz_lines = re.findall(r'[A-Z0-9<]{44}', raw.replace(' ', ''))
+    if len(mrz_lines) >= 1: result['mrz_line1'] = mrz_lines[0]
+    if len(mrz_lines) >= 2: result['mrz_line2'] = mrz_lines[1]
 
     return result
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4.  MODEL BACKENDS
