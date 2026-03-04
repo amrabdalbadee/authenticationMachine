@@ -587,6 +587,17 @@ def _regex_extract_dl(raw: str) -> dict:
             result['national_id_number'] = digits
             break
 
+    # License number: shorter alphanumeric code (6–12 chars) near رخصة / license keywords
+    ln = re.search(r'(?:رخصة|رقم)\s*[:\-]?\s*([A-Z0-9]{4,12})', text, re.IGNORECASE)
+    if ln:
+        result.setdefault('license_number', ln.group(1))
+    # Fallback: any standalone 6-10 digit number that is NOT the national ID
+    for m in re.finditer(r'\b(\d{6,10})\b', text):
+        val = m.group(1)
+        if val != result.get('national_id_number'):
+            result.setdefault('license_number', val)
+            break
+
     # Dates  YYYY/MM/DD
     dates_found = re.findall(r'\b(\d{4}/\d{2}/\d{2})\b', text)
     if len(dates_found) >= 1:
@@ -1058,6 +1069,9 @@ def _process_image(image_path: str, side: str,
             "issue_date":         _validate_date(parsed.get("issue_date"),       "YYYY/MM/DD"),
             "expiry_date":        _validate_date(parsed.get("expiry_date"),      "YYYY/MM/DD"),
             "issuing_authority":  _clean(parsed.get("issuing_authority")),
+            "profession":         _clean(parsed.get("profession")),
+            "address":            _clean(parsed.get("address")),
+            "civil_status":       _clean(parsed.get("civil_status")),
             "mrz_line1":          _clean(parsed.get("mrz_line1")),
             "mrz_line2":          _clean(parsed.get("mrz_line2")),
         }
@@ -1092,6 +1106,24 @@ def _process_image(image_path: str, side: str,
 
     return raw, {k: v for k, v in cleaned.items() if v is not None}
 
+
+
+def _ocr_image(image_path: str, run_fn: Callable,
+               doc_type: str = "national_id",
+               verbose: bool = False) -> str:
+    """Pass 1 only — returns raw OCR text for an image without parsing."""
+    if doc_type == "driver_license":
+        ocr_prompt = RAW_OCR_PROMPT_DL
+    elif doc_type == "passport":
+        ocr_prompt = RAW_OCR_PROMPT_PASSPORT
+    else:
+        ocr_prompt = RAW_OCR_PROMPT
+    raw = run_fn(image_path, ocr_prompt)
+    if raw.startswith(ocr_prompt):
+        raw = raw[len(ocr_prompt):].strip()
+    if verbose:
+        print(f"\n  {'─'*42}\n  RAW OCR ({image_path}):\n{raw}\n  {'─'*42}\n")
+    return raw
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 8.  HIGH-LEVEL EXTRACTOR
@@ -1176,7 +1208,7 @@ class DriverLicenseExtractor:
 
     Usage:
         extractor = DriverLicenseExtractor(backend="qwen2vl-2b")
-        result = extractor.extract(front_image="front.jpg", back_image="back.jpg")
+        result = extractor.extract(image="license.jpg")
         print(result.to_json())
     """
 
@@ -1193,48 +1225,69 @@ class DriverLicenseExtractor:
         self.backend_cfg = BACKENDS[backend]
         self.verbose     = verbose
 
-    def extract(self,
-                front_image: Optional[str] = None,
-                back_image:  Optional[str] = None) -> DriverLicenseData:
-
-        if not front_image and not back_image:
-            raise ValueError("Provide at least one image (front and/or back)")
+    def extract(self, image: str) -> DriverLicenseData:
+        """Single-image extraction — driver licenses have one scannable side."""
+        if not image:
+            raise ValueError("Provide an image path")
 
         run_fn = self.backend_cfg["fn"]
         result = DriverLicenseData(backend_used=self.backend_cfg["name"])
-        merged: dict = {}
 
-        if front_image:
-            print(f"\n── FRONT: {front_image}")
-            raw, data = _process_image(front_image, "front", run_fn, self.verbose,
-                                       doc_type="driver_license")
-            result.raw_text_front = raw
-            merged.update(data)
+        # ── Pass 1: raw OCR ───────────────────────────────────────────────────
+        print(f"\n── IMAGE: {image}")
+        raw = _ocr_image(image, run_fn, doc_type="driver_license", verbose=self.verbose)
+        result.raw_text_front = raw
 
-        if back_image:
-            print(f"\n── BACK: {back_image}")
-            raw, data = _process_image(back_image, "back", run_fn, self.verbose,
-                                       doc_type="driver_license")
-            result.raw_text_back = raw
-            _BACK_ONLY = {"issuing_authority", "traffic_department", "license_type",
-                          "license_categories", "issue_date", "expiry_date", "condition"}
-            for k, v in data.items():
-                if v and (k in _BACK_ONLY or not merged.get(k)):
-                    merged[k] = v
+        # ── Pass 2: structured parse ──────────────────────────────────────────
+        print("  [Pass 2] Structured extraction...")
+        parse_prompt = build_parse_prompt_dl(raw)
+        parse_resp   = run_fn(image, parse_prompt)
+        if self.verbose:
+            print(f"  PARSE RESPONSE:\n{parse_resp}")
+        parsed = _parse_json(parse_resp)
 
+        # ── Pass 2b: validate & clean ─────────────────────────────────────────
+        print("  [Pass 2b] Validating and cleaning fields...")
+        cleaned: dict = {
+            "full_name_arabic":   _clean(parsed.get("full_name_arabic")),
+            "full_name_latin":    _clean(parsed.get("full_name_latin")),
+            "national_id_number": _validate_id(parsed.get("national_id_number")),
+            "nationality":        _clean(parsed.get("nationality")),
+            "occupation":         _clean(parsed.get("occupation")),
+            "address":            _clean(parsed.get("address")),
+            "issuing_authority":  _clean(parsed.get("issuing_authority")),
+            "traffic_department": _clean(parsed.get("traffic_department")),
+            "license_type":       _clean(parsed.get("license_type")),
+            "license_categories": _clean(parsed.get("license_categories")),
+            "issue_date":         _validate_date(parsed.get("issue_date"),  "YYYY/MM/DD"),
+            "expiry_date":        _validate_date(parsed.get("expiry_date"), "YYYY/MM/DD"),
+            "condition":          _clean(parsed.get("condition")),
+        }
+
+        # ── Pass 3: regex recovery ────────────────────────────────────────────
+        print("  [Pass 3] Regex fallback recovery...")
+        recovered = []
+        for k, v in _regex_extract_dl(raw).items():
+            if v and not cleaned.get(k):
+                cleaned[k] = v
+                recovered.append(k)
+        if recovered:
+            print(f"  ✓ Recovered via regex: {recovered}")
+
+        # ── Map to dataclass ──────────────────────────────────────────────────
         _FIELDS = [
             "full_name_arabic", "full_name_latin", "national_id_number",
-            "nationality", "occupation", "address",
-            "issuing_authority", "traffic_department", "license_type",
-            "license_categories", "issue_date", "expiry_date", "condition",
+            "nationality", "occupation", "address", "issuing_authority",
+            "traffic_department", "license_type", "license_categories",
+            "issue_date", "expiry_date", "condition",
         ]
         for f in _FIELDS:
-            if merged.get(f):
-                setattr(result, f, merged[f])
+            if cleaned.get(f):
+                setattr(result, f, cleaned[f])
 
-        # Confidence
+        # ── Confidence ────────────────────────────────────────────────────────
         key_fields = ["full_name_arabic", "national_id_number",
-                      "issuing_authority", "expiry_date"]
+                      "license_categories", "expiry_date"]
         filled = sum(1 for f in key_fields if getattr(result, f))
         result.confidence = "high" if filled >= 3 else "medium" if filled >= 2 else "low"
 
@@ -1249,7 +1302,7 @@ class PassportExtractor:
 
     Usage:
         extractor = PassportExtractor(backend="qwen2vl-2b")
-        result = extractor.extract(front_image="passport_data_page.jpg")
+        result = extractor.extract(image="passport.jpg")
         print(result.to_json())
     """
 
@@ -1266,19 +1319,16 @@ class PassportExtractor:
         self.backend_cfg = BACKENDS[backend]
         self.verbose     = verbose
 
-    def extract(self, front_image: str) -> PassportData:
-        """
-        Extract data from the passport bio-data page.
-        Passports are single-image: use front_image for the data page.
-        """
-        if not front_image:
-            raise ValueError("Provide front_image (the passport bio-data page)")
+    def extract(self, image: str) -> PassportData:
+        """Single-image extraction — scan the passport bio-data page."""
+        if not image:
+            raise ValueError("Provide an image path")
 
         run_fn = self.backend_cfg["fn"]
         result = PassportData(backend_used=self.backend_cfg["name"])
 
-        print(f"\n── DATA PAGE: {front_image}")
-        raw, data = _process_image(front_image, "front", run_fn, self.verbose,
+        print(f"\n── IMAGE: {image}")
+        raw, data = _process_image(image, "front", run_fn, self.verbose,
                                    doc_type="passport")
         result.raw_text_front = raw
 
@@ -1287,6 +1337,7 @@ class PassportExtractor:
             "nationality", "national_id_number", "passport_number",
             "date_of_birth", "place_of_birth", "sex",
             "issue_date", "expiry_date", "issuing_authority",
+            "profession", "address", "civil_status",
             "mrz_line1", "mrz_line2",
         ]
         for f in _FIELDS:
@@ -1317,8 +1368,8 @@ def main() -> None:
         epilog=f"""
 Document types:
   national_id      Egyptian National ID card (front + back)   ← default
-  driver_license   Egyptian Driver's License (front + back)
-  passport         Egyptian Passport bio-data page (front only)
+  driver_license   Egyptian Driver's License (single image)
+  passport         Egyptian Passport bio-data page (single image)
 
 Available backends (use --list-backends for full table):
   qwen2vl-2b   ← default, ~3.5 GB RAM, best Arabic, recommended for CPU
@@ -1331,24 +1382,25 @@ Examples:
   # National ID — both sides:
   python extractor.py --doc-type national_id --front front.jpg --back back.jpg
 
-  # Driver's License — both sides:
-  python extractor.py --doc-type driver_license --front front.jpg --back back.jpg
+  # Driver's License — single image:
+  python extractor.py --doc-type driver_license --image license.jpg
 
-  # Passport — data page only:
-  python extractor.py --doc-type passport --front passport.jpg
+  # Passport — data page:
+  python extractor.py --doc-type passport --image passport.jpg
 
   # Save JSON output:
-  python extractor.py --doc-type passport --front passport.jpg --output result.json
+  python extractor.py --doc-type passport --image passport.jpg --output result.json
 
   # Debug — see raw OCR text at every pass:
-  python extractor.py --doc-type driver_license --front front.jpg --verbose
+  python extractor.py --doc-type driver_license --image license.jpg --verbose
         """
     )
     parser.add_argument("--doc-type", default="national_id",
                         choices=["national_id", "driver_license", "passport"],
                         help="Document type to extract (default: national_id)")
-    parser.add_argument("--front",   metavar="IMAGE", help="Front side / data-page image path")
-    parser.add_argument("--back",    metavar="IMAGE", help="Back side image path (not used for passport)")
+    parser.add_argument("--front",   metavar="IMAGE", help="Front side image (National ID)")
+    parser.add_argument("--back",    metavar="IMAGE", help="Back side image (National ID)")
+    parser.add_argument("--image",   metavar="IMAGE", help="Single image (Driver's License or Passport)")
     parser.add_argument("--backend", default="qwen2vl-2b",
                         choices=list(BACKENDS),
                         help="Vision model backend (default: qwen2vl-2b)")
@@ -1367,24 +1419,23 @@ Examples:
         list_backends()
         return
 
-    if not args.front and not args.back:
-        parser.error("Provide --front and/or --back image path(s)")
+    if not args.front and not args.back and not args.image:
+        parser.error("Provide --image (for driver_license/passport) or --front/--back (for national_id)")
 
     doc_type = args.doc_type
 
     # ── Select extractor ──────────────────────────────────────────────────────
     if doc_type == "driver_license":
+        if not args.image:
+            parser.error("--image is required for driver_license")
         extractor = DriverLicenseExtractor(backend=args.backend, verbose=args.verbose)
-        result    = extractor.extract(front_image=args.front, back_image=args.back)
-        raw_data  = {
-            "raw_text_front": result.raw_text_front,
-            "raw_text_back":  result.raw_text_back,
-        }
+        result    = extractor.extract(image=args.image)
+        raw_data  = {"raw_text_front": result.raw_text_front}
     elif doc_type == "passport":
-        if not args.front:
-            parser.error("--front is required for passport extraction")
+        if not args.image:
+            parser.error("--image is required for passport")
         extractor = PassportExtractor(backend=args.backend, verbose=args.verbose)
-        result    = extractor.extract(front_image=args.front)
+        result    = extractor.extract(image=args.image)
         raw_data  = {"raw_text_front": result.raw_text_front}
     else:
         extractor = EgyptianIDExtractor(backend=args.backend, verbose=args.verbose)
