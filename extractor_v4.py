@@ -40,9 +40,96 @@ import os
 import re
 import argparse
 import time
+import tempfile
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Optional, Callable
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 0.  IMAGE ORIENTATION CORRECTION
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _correct_orientation(image_path: str, verbose: bool = False) -> str:
+    """
+    Fix image rotation / skew BEFORE it reaches the OCR pipeline.
+
+    1. **EXIF transpose** (Pillow) — corrects rotation metadata written by
+       phone cameras (90°, 180°, 270° and mirror flips).
+    2. **Deskew** (OpenCV) — detects and corrects slight document tilt
+       (angles up to ±45°) using the minimum-area bounding rectangle of
+       edge contours.
+
+    Returns the path to the corrected image (a temp file).  If no
+    correction is needed, returns the original *image_path* unchanged.
+    """
+    from PIL import Image, ImageOps
+    corrected = False
+
+    # ── Step 1: EXIF-based rotation ───────────────────────────────────────
+    img = Image.open(image_path)
+    exif_transposed = ImageOps.exif_transpose(img)
+    if exif_transposed is not img:          # orientation tag was present
+        img = exif_transposed
+        corrected = True
+        if verbose:
+            print("  [orient] Applied EXIF transpose.")
+
+    # ── Step 2: OpenCV deskew ─────────────────────────────────────────────
+    try:
+        import cv2
+        import numpy as np
+
+        # Convert current PIL image → OpenCV BGR array
+        rgb = img.convert("RGB")
+        arr = np.array(rgb)[:, :, ::-1].copy()   # RGB → BGR
+
+        gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
+        # Binarise + find edges
+        gray = cv2.bitwise_not(gray)
+        thresh = cv2.threshold(gray, 0, 255,
+                               cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+        coords = np.column_stack(np.where(thresh > 0))
+
+        if coords.shape[0] > 50:                  # enough pixels to estimate
+            angle = cv2.minAreaRect(coords)[-1]   # range (-90, 0]
+
+            # Normalise into (-45, 45] — the actual document skew
+            if angle < -45:
+                angle = -(90 + angle)
+            else:
+                angle = -angle
+
+            if 0.5 < abs(angle) <= 45:            # skip trivial corrections
+                (h, w) = arr.shape[:2]
+                center = (w // 2, h // 2)
+                M = cv2.getRotationMatrix2D(center, angle, 1.0)
+                rotated = cv2.warpAffine(
+                    arr, M, (w, h),
+                    flags=cv2.INTER_CUBIC,
+                    borderMode=cv2.BORDER_REPLICATE,
+                )
+                # Convert back to PIL
+                img = Image.fromarray(cv2.cvtColor(rotated, cv2.COLOR_BGR2RGB))
+                corrected = True
+                if verbose:
+                    print(f"  [orient] Deskewed by {angle:.2f}°")
+    except ImportError:
+        # OpenCV not installed — EXIF-only correction is still valuable.
+        if verbose:
+            print("  [orient] OpenCV not available; skipping deskew.")
+
+    if not corrected:
+        return image_path                          # nothing to do
+
+    # Save to a temp file that persists for the lifetime of the process.
+    suffix = Path(image_path).suffix or ".jpg"
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    img.convert("RGB").save(tmp, quality=95)
+    tmp.close()
+    if verbose:
+        print(f"  [orient] Saved corrected image → {tmp.name}")
+    return tmp.name
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1003,6 +1090,9 @@ def _process_image(image_path: str, side: str,
     doc_type: "national_id" | "driver_license" | "passport"
     """
 
+    # ── Step 0: Fix rotation / skew ────────────────────────────────────────
+    image_path = _correct_orientation(image_path, verbose=verbose)
+
     # ── Select OCR prompt ─────────────────────────────────────────────────────
     if doc_type == "driver_license":
         ocr_prompt = RAW_OCR_PROMPT_DL
@@ -1116,6 +1206,7 @@ def _ocr_image(image_path: str, run_fn: Callable,
                doc_type: str = "national_id",
                verbose: bool = False) -> str:
     """Pass 1 only — returns raw OCR text for an image without parsing."""
+    image_path = _correct_orientation(image_path, verbose=verbose)
     if doc_type == "driver_license":
         ocr_prompt = RAW_OCR_PROMPT_DL
     elif doc_type == "passport":
